@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.4] - 2026-06-09
+
+### Added
+- **Automatic Browser-Fallback Posting to Threads**: Implemented Windows PowerShell `SendKeys` keyboard automation (`Ctrl+Enter`) inside the Rust backend. When the user publishes a post to Threads without an API token (or if the API fails), the backend opens the browser intent tab and automatically simulates the keyboard shortcut after 6 seconds to submit the post without manual clicking.
+- **Access Token UI & State Management**: Integrated "Threads Access Token" password field in Settings modal, preserving the token in the browser's local storage and passing it dynamically in request payloads to `/api/chat`.
+
 ## [1.3.3] - 2026-06-09
 
 ### Added

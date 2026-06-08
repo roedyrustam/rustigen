@@ -4,6 +4,7 @@ let state = {
     activeSessionId: null,
     settings: {
         apiKey: "",
+        threadsToken: "",
         model: "gemini-2.5-flash",
         temperature: 0.7,
         maxContext: 20,
@@ -35,6 +36,7 @@ const closeSettingsBtn = document.getElementById("close-settings-btn");
 const saveSettingsBtn = document.getElementById("save-settings-btn");
 const resetSettingsBtn = document.getElementById("reset-settings-btn");
 const settingApiKey = document.getElementById("setting-api-key");
+const settingThreadsToken = document.getElementById("setting-threads-token");
 const settingModel = document.getElementById("setting-model");
 const settingTempSlider = document.getElementById("setting-temp-slider");
 const settingTempVal = document.getElementById("setting-temp-val");
@@ -238,6 +240,7 @@ function loadSettings() {
     
     // Populate form fields
     settingApiKey.value = state.settings.apiKey || "";
+    settingThreadsToken.value = state.settings.threadsToken || "";
     settingModel.value = state.settings.model || "gemini-2.5-flash";
     settingTempSlider.value = state.settings.temperature || 0.7;
     settingTempVal.textContent = state.settings.temperature || 0.7;
@@ -250,6 +253,7 @@ function loadSettings() {
 
 function saveSettings() {
     state.settings.apiKey = settingApiKey.value.trim();
+    state.settings.threadsToken = settingThreadsToken.value.trim();
     state.settings.model = settingModel.value;
     state.settings.temperature = parseFloat(settingTempSlider.value);
     state.settings.maxContext = parseInt(settingContextSlider.value);
@@ -264,12 +268,14 @@ function saveSettings() {
 function resetSettings() {
     state.settings = {
         apiKey: "",
+        threadsToken: "",
         model: "gemini-2.5-flash",
         temperature: 0.7,
         maxContext: 20,
         systemPrompt: ""
     };
     settingApiKey.value = "";
+    settingThreadsToken.value = "";
     settingModel.value = "gemini-2.5-flash";
     settingTempSlider.value = 0.7;
     settingTempVal.textContent = "0.7";
@@ -657,6 +663,7 @@ async function sendMessage() {
             body: JSON.stringify({
                 messages: payloadMessages,
                 api_key: state.settings.apiKey || null,
+                threads_token: state.settings.threadsToken || null,
                 model: state.settings.model,
                 temperature: state.settings.temperature,
                 max_context: state.settings.maxContext,

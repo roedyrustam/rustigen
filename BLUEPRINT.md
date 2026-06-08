@@ -1,6 +1,6 @@
 # Project Blueprint
 
-- **Version**: 1.3.3
+- **Version**: 1.3.4
 - **Last Updated**: 2026-06-09
 - **Description**: High-performance Agentic AI Chatbot with reasoning loops, SSE streaming, local tool access, custom personality settings, hotkeys, search, Markdown export, Markdown image rendering, and premium YouTube niche analysis (with auto-search channel discovery, avatar, description, and sub count) built in Rust (Axum + Tokio) and Vanilla JS/CSS.
 
@@ -39,5 +39,5 @@
   - `search_web`: Search the web using DuckDuckGo HTML parser.
   - `fetch_url`: Fetch web text content.
   - `execute_command`: Run whitelisted shell commands with 30s timeout (cargo, git, node, npm, python, etc.).
-  - `post_to_threads`: Formats high-engagement Threads content and returns a Web Intent URL (`https://threads.net/intent/post?text=...`) to open it on the browser.
+  - `post_to_threads`: Auto-publishes posts directly via Threads Graph API if an Access Token is configured in Settings. Falls back to opening a browser pre-filled composer tab and running a PowerShell SendKeys simulation to automatically trigger the `Ctrl+Enter` publish hotkey after 6 seconds.
   - `analyze_youtube_channel`: Searches YouTube for keywords to auto-discover matching channels, scrapes channel HTML profile page (resolving ID, avatar, subscribers, videos, description), parses RSS XML feed views/dates/titles, detects outlier high-performing topics, and suggests micro niches.

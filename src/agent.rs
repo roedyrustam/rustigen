@@ -26,6 +26,7 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     pub max_context: Option<usize>,
     pub system_prompt: Option<String>,
+    pub threads_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1012,6 +1013,66 @@ impl ToolResult {
     }
 }
 
+async fn publish_to_threads_api(
+    client: &reqwest::Client,
+    text: &str,
+    token: &str,
+) -> Result<String, String> {
+    // 1. Create Threads Media Container
+    let create_url = format!(
+        "https://graph.threads.net/v1.0/me/threads?media_type=TEXT&text={}&access_token={}",
+        url_encode(text),
+        token
+    );
+    
+    let res = client.post(&create_url)
+        .send()
+        .await
+        .map_err(|e| format!("Gagal mengirim request media container: {}", e))?;
+        
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    
+    if !status.is_success() {
+        return Err(format!("API Error (status {}): {}", status, body));
+    }
+    
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("Gagal parse JSON media container: {}", e))?;
+        
+    let container_id = json.get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("ID media container tidak ditemukan dalam response: {}", body))?;
+
+    // 2. Publish the Container
+    let publish_url = format!(
+        "https://graph.threads.net/v1.0/me/threads_publish?creation_id={}&access_token={}",
+        container_id,
+        token
+    );
+    
+    let res_publish = client.post(&publish_url)
+        .send()
+        .await
+        .map_err(|e| format!("Gagal mengirim request publish: {}", e))?;
+        
+    let status_publish = res_publish.status();
+    let body_publish = res_publish.text().await.unwrap_or_default();
+    
+    if !status_publish.is_success() {
+        return Err(format!("API Error Publish (status {}): {}", status_publish, body_publish));
+    }
+    
+    let json_pub: serde_json::Value = serde_json::from_str(&body_publish)
+        .map_err(|e| format!("Gagal parse JSON publish: {}", e))?;
+        
+    let post_id = json_pub.get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("ID post tidak ditemukan dalam response publish: {}", body_publish))?;
+        
+    Ok(post_id.to_string())
+}
+
 // --- CONTEXT WINDOW MANAGEMENT ---
 fn trim_conversation(messages: &[Message], max_messages: usize) -> Vec<Message> {
     if messages.len() <= max_messages {
@@ -1033,6 +1094,7 @@ async fn execute_tool(
     tool_name: &str,
     call: &ToolCall,
     client: &reqwest::Client,
+    threads_token: Option<&str>,
 ) -> ToolResult {
     match tool_name {
         "calculator" => {
@@ -1091,11 +1153,47 @@ async fn execute_tool(
             if let Some(text) = &call.text {
                 let encoded = url_encode(text);
                 let intent_url = format!("https://www.threads.net/intent/post?text={}", encoded);
-                let output = format!(
-                    "Successfully generated Threads post. Opening browser tab to publish...\n\nContent:\n\"{}\"",
-                    text
-                );
-                ToolResult::with_url(output, intent_url)
+                
+                if let Some(token) = threads_token {
+                    match publish_to_threads_api(client, text, token).await {
+                        Ok(post_id) => {
+                            let output = format!(
+                                "Successfully published post directly to Threads (ID: `{}`).\n\nContent:\n\"{}\"",
+                                post_id, text
+                            );
+                            ToolResult::new(output)
+                        }
+                        Err(err) => {
+                            let output = format!(
+                                "Failed to publish directly via Threads API (Error: {}).\nFalling back: opening browser tab to publish (auto-submitting)...\n\nContent:\n\"{}\"",
+                                err, text
+                            );
+                            // Trigger auto-posting via SendKeys keyboard automation
+                            tokio::spawn(async {
+                                tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                                let _ = tokio::process::Command::new("powershell")
+                                    .args(&["-Command", "(New-Object -ComObject Wscript.Shell).SendKeys('^{ENTER}')"])
+                                    .output()
+                                    .await;
+                            });
+                            ToolResult::with_url(output, intent_url)
+                        }
+                    }
+                } else {
+                    let output = format!(
+                        "Successfully generated Threads post. Opening browser tab to publish (auto-submitting)...\n\nContent:\n\"{}\"",
+                        text
+                    );
+                    // Trigger auto-posting via SendKeys keyboard automation
+                    tokio::spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                        let _ = tokio::process::Command::new("powershell")
+                            .args(&["-Command", "(New-Object -ComObject Wscript.Shell).SendKeys('^{ENTER}')"])
+                            .output()
+                            .await;
+                    });
+                    ToolResult::with_url(output, intent_url)
+                }
             } else {
                 ToolResult::new("Error: Missing 'text' argument for post_to_threads".to_string())
             }
@@ -1282,7 +1380,7 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
                     }).await;
                     
                     // Execute tool
-                    let tool_result = execute_tool(&tool_name, &tool_call, client).await;
+                    let tool_result = execute_tool(&tool_name, &tool_call, client, req.threads_token.as_deref()).await;
 
                     if let Some(ref url) = tool_result.open_url {
                         let _ = tx.send(SseEvent::OpenUrl { url: url.clone() }).await;
@@ -1808,6 +1906,15 @@ async fn run_demo_mode_streaming(
 
         let _ = tx.send(SseEvent::OpenUrl { url: intent_url }).await;
 
+        // Trigger auto-posting via SendKeys keyboard automation in Demo Mode
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            let _ = tokio::process::Command::new("powershell")
+                .args(&["-Command", "(New-Object -ComObject Wscript.Shell).SendKeys('^{ENTER}')"])
+                .output()
+                .await;
+        });
+
         response = format!(
             "🚀 **Membuka postingan di Threads...** (Mode Demo)\n\n\
             **Konten Terposting:**\n\
@@ -1818,7 +1925,7 @@ async fn run_demo_mode_streaming(
             1. **Hook Awal**: 1-2 baris pertama menarik perhatian pembaca.\n\
             2. **Call to Action (CTA)**: Pertanyaan di akhir mendorong interaksi (kolom balasan).\n\
             3. **Panjang Karakter**: {} karakter (sangat di bawah limit 500).\n\n\
-            *Tab baru Threads web composer seharusnya terbuka otomatis secara lokal. Klik 'Post' untuk mempublikasikan!*",
+            *Tab baru Threads web composer seharusnya terbuka otomatis secara lokal dan diposting otomatis dalam waktu 6 detik!*",
             post_text, post_text.chars().count()
         );
     } else {
