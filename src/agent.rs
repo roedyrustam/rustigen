@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::time::Instant;
-use anyhow::{Result, Context};
+use anyhow::Result;
 use tracing::info;
+use tokio::sync::mpsc;
 
 static START_TIME: OnceLock<Instant> = OnceLock::new();
 
@@ -23,6 +24,7 @@ pub struct ChatRequest {
     pub api_key: Option<String>,
     pub model: Option<String>,
     pub temperature: Option<f32>,
+    pub max_context: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,11 +34,20 @@ pub struct AgentStep {
     pub status: String, // "pending", "success", "error"
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChatResponse {
-    pub steps: Vec<AgentStep>,
-    pub response: String,
-    pub open_url: Option<String>,
+/// SSE event types sent to the frontend
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum SseEvent {
+    #[serde(rename = "step")]
+    Step { step: AgentStep },
+    #[serde(rename = "chunk")]
+    Chunk { text: String },
+    #[serde(rename = "open_url")]
+    OpenUrl { url: String },
+    #[serde(rename = "done")]
+    Done,
+    #[serde(rename = "error")]
+    Error { message: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +59,8 @@ struct ToolCall {
     query: Option<String>,
     url: Option<String>,
     text: Option<String>,
+    command: Option<String>,
+    args: Option<Vec<String>>,
 }
 
 // --- MATH EVALUATOR ---
@@ -330,6 +343,76 @@ async fn run_search_web(client: &reqwest::Client, query: &str) -> String {
     }
 }
 
+// --- EXECUTE COMMAND TOOL ---
+const COMMAND_WHITELIST: &[&str] = &[
+    "cargo", "rustc", "rustup", "dir", "ls", "type", "cat", "echo",
+    "node", "npm", "npx", "git", "python", "python3", "pip",
+    "whoami", "hostname", "ping", "curl", "where", "which",
+];
+
+async fn run_execute_command(command: &str, args: &[String]) -> String {
+    // Validate command against whitelist
+    let cmd_base = command.split(['/', '\\']).last().unwrap_or(command);
+    let cmd_lower = cmd_base.to_lowercase();
+    let cmd_clean = cmd_lower.strip_suffix(".exe").unwrap_or(&cmd_lower);
+
+    if !COMMAND_WHITELIST.iter().any(|&w| w == cmd_clean) {
+        return format!(
+            "Error: Command '{}' is not in the allowed whitelist.\nAllowed commands: {}",
+            command,
+            COMMAND_WHITELIST.join(", ")
+        );
+    }
+
+    let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    info!("Executing command: {} {:?} in {:?}", command, args, workspace);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::process::Command::new(command)
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+    ).await;
+
+    match result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let exit_code = output.status.code().unwrap_or(-1);
+
+            let mut result_str = format!("Exit Code: {}\n", exit_code);
+
+            if !stdout.is_empty() {
+                let stdout_trimmed = if stdout.len() > 10000 {
+                    format!("{}...\n(output truncated at 10000 chars)", &stdout[..10000])
+                } else {
+                    stdout.to_string()
+                };
+                result_str.push_str(&format!("\n--- STDOUT ---\n{}", stdout_trimmed));
+            }
+
+            if !stderr.is_empty() {
+                let stderr_trimmed = if stderr.len() > 5000 {
+                    format!("{}...\n(stderr truncated at 5000 chars)", &stderr[..5000])
+                } else {
+                    stderr.to_string()
+                };
+                result_str.push_str(&format!("\n--- STDERR ---\n{}", stderr_trimmed));
+            }
+
+            if stdout.is_empty() && stderr.is_empty() {
+                result_str.push_str("\n(No output produced)");
+            }
+
+            result_str
+        }
+        Ok(Err(e)) => format!("Error executing command '{}': {}", command, e),
+        Err(_) => format!("Error: Command '{}' timed out after 30 seconds", command),
+    }
+}
+
 fn strip_html_tags(input: &str) -> String {
     let mut output = String::new();
     let mut in_tag = false;
@@ -490,6 +573,21 @@ impl ToolResult {
     }
 }
 
+// --- CONTEXT WINDOW MANAGEMENT ---
+fn trim_conversation(messages: &[Message], max_messages: usize) -> Vec<Message> {
+    if messages.len() <= max_messages {
+        return messages.to_vec();
+    }
+    // Always keep the first message (initial user query for context) + last N messages
+    let mut trimmed = Vec::with_capacity(max_messages + 1);
+    trimmed.push(messages[0].clone());
+    let start = messages.len().saturating_sub(max_messages);
+    for msg in &messages[start..] {
+        trimmed.push(msg.clone());
+    }
+    trimmed
+}
+
 // --- AGENT LOOP EXECUTION ---
 
 async fn execute_tool(
@@ -541,6 +639,15 @@ async fn execute_tool(
             };
             ToolResult::new(res)
         }
+        "execute_command" => {
+            let res = if let Some(command) = &call.command {
+                let args = call.args.clone().unwrap_or_default();
+                run_execute_command(command, &args).await
+            } else {
+                "Error: Missing 'command' argument for execute_command".to_string()
+            };
+            ToolResult::new(res)
+        }
         "post_to_threads" => {
             if let Some(text) = &call.text {
                 let encoded = url_encode(text);
@@ -558,18 +665,23 @@ async fn execute_tool(
     }
 }
 
-pub async fn run_agent_loop(
+/// Streaming agent loop — sends SSE events through the channel as it processes
+pub async fn run_agent_loop_streaming(
     req: ChatRequest,
     client: &reqwest::Client,
     env_api_key: Option<String>,
-) -> Result<ChatResponse> {
+    tx: mpsc::Sender<SseEvent>,
+) {
     let api_key = req.api_key.or(env_api_key);
-    let model = req.model.unwrap_or_else(|| "gemini-1.5-flash".to_string());
+    let model = req.model.unwrap_or_else(|| "gemini-2.5-flash".to_string());
     let temp = req.temperature.unwrap_or(0.7);
+    let max_ctx = req.max_context.unwrap_or(20);
 
     // If no API key is provided, execute Demo Mode
     if api_key.is_none() {
-        return Ok(run_demo_mode(&req.messages, client).await);
+        run_demo_mode_streaming(&req.messages, client, &tx).await;
+        let _ = tx.send(SseEvent::Done).await;
+        return;
     }
 
     let key = api_key.unwrap();
@@ -588,6 +700,7 @@ You are an advanced agentic coding and analysis assistant. You have access to th
 - `write_file(path, content)`: Write or overwrite text content of a file relative to workspace. Example request: <tool_call>{\"tool\": \"write_file\", \"path\": \"src/temp.txt\", \"content\": \"Hello World!\"}</tool_call>
 - `search_web(query)`: Search the web using DuckDuckGo search. Returns matching titles, URLs, and snippets. Example request: <tool_call>{\"tool\": \"search_web\", \"query\": \"Rust Axum routing tutorial\"}</tool_call>
 - `fetch_url(url)`: Fetch and extract plain text content from a web page URL. Example request: <tool_call>{\"tool\": \"fetch_url\", \"url\": \"https://example.com\"}</tool_call>
+- `execute_command(command, args)`: Execute a whitelisted shell command in the workspace. Returns stdout, stderr, and exit code. The command has a 30-second timeout. Allowed commands include: cargo, rustc, git, node, npm, python, dir, ls, echo, etc. Example request: <tool_call>{\"tool\": \"execute_command\", \"command\": \"cargo\", \"args\": [\"build\"]}</tool_call>
 - `post_to_threads(text)`: Auto-publish a post to Threads. Generates high-engagement Threads content matching the timeline algorithm (strong hook, short paragraphs, spacing, ending question to drive replies, under 500 characters, no external links). Example request: <tool_call>{\"tool\": \"post_to_threads\", \"text\": \"Did you know that Rust Axum compiles down to a single binary under 10MB? 🦀\\n\\nHere is why it is the future of web dev...\\n\\nWhat is your favorite Rust framework?\"}</tool_call>
 
 To use a tool, you must respond with a JSON object enclosed in `<tool_call>` and `</tool_call>` tags.
@@ -605,9 +718,6 @@ I need to check the current directory contents to see the main source files. Let
 Once you receive the tool result, analyze it, make further tool calls if needed, and when finished, output your final response outside of any `<thought>` or `<tool_call>` tags. Always explain the results clearly.";
 
     let mut conversation = req.messages.clone();
-    let mut steps = Vec::new();
-    let mut final_response = String::new();
-    let mut response_open_url = None;
     let mut loop_count = 0;
     const MAX_LOOPS: usize = 5;
 
@@ -615,9 +725,12 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
         loop_count += 1;
         info!("Running agent loop iteration {}", loop_count);
 
+        // Trim conversation to max context window
+        let trimmed = trim_conversation(&conversation, max_ctx);
+
         // Map conversation into Gemini API format
         let mut contents = Vec::new();
-        for msg in &conversation {
+        for msg in &trimmed {
             contents.push(serde_json::json!({
                 "role": msg.role,
                 "parts": [{ "text": msg.content }]
@@ -634,26 +747,49 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
             }
         });
 
-        let response = client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await
-            .context("Failed to send request to Gemini API")?;
+        let response = match client.post(&url).json(&request_body).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = tx.send(SseEvent::Error {
+                    message: format!("Failed to send request to Gemini API: {}", e),
+                }).await;
+                let _ = tx.send(SseEvent::Done).await;
+                return;
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
             let err_text = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Gemini API returned status {}: {}", status, err_text));
+            let _ = tx.send(SseEvent::Error {
+                message: format!("Gemini API returned status {}: {}", status, err_text),
+            }).await;
+            let _ = tx.send(SseEvent::Done).await;
+            return;
         }
 
-        let resp_json: serde_json::Value = response.json().await.context("Failed to parse Gemini API response")?;
-        
+        let resp_json: serde_json::Value = match response.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                let _ = tx.send(SseEvent::Error {
+                    message: format!("Failed to parse Gemini API response: {}", e),
+                }).await;
+                let _ = tx.send(SseEvent::Done).await;
+                return;
+            }
+        };
+
         // Extract output text
-        let output_text = resp_json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Empty response from Gemini API: {:?}", resp_json))?
-            .to_string();
+        let output_text = match resp_json["candidates"][0]["content"]["parts"][0]["text"].as_str() {
+            Some(t) => t.to_string(),
+            None => {
+                let _ = tx.send(SseEvent::Error {
+                    message: format!("Empty response from Gemini API: {:?}", resp_json),
+                }).await;
+                let _ = tx.send(SseEvent::Done).await;
+                return;
+            }
+        };
 
         info!("Agent output: {}", output_text);
 
@@ -661,11 +797,13 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
         if let Some(start_thought) = output_text.find("<thought>") {
             if let Some(end_thought) = output_text.find("</thought>") {
                 let thought_content = output_text[start_thought + 9..end_thought].trim().to_string();
-                steps.push(AgentStep {
-                    title: "Thinking Process".to_string(),
-                    log: thought_content,
-                    status: "success".to_string(),
-                });
+                let _ = tx.send(SseEvent::Step {
+                    step: AgentStep {
+                        title: "Thinking Process".to_string(),
+                        log: thought_content,
+                        status: "success".to_string(),
+                    }
+                }).await;
             }
         }
 
@@ -678,28 +816,33 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
                     has_tool_call = true;
                     
                     let tool_name = tool_call.tool.clone();
-                    let step_title = format!("Executing Tool: {}", tool_name);
-                    let mut step_log = format!("Arguments: {}\n", tool_json_str.trim());
                     
-                    steps.push(AgentStep {
-                        title: step_title.clone(),
-                        log: step_log.clone() + "Running...",
-                        status: "pending".to_string(),
-                    });
-                    
-                    let step_index = steps.len() - 1;
+                    // Send pending step
+                    let _ = tx.send(SseEvent::Step {
+                        step: AgentStep {
+                            title: format!("Executing Tool: {}", tool_name),
+                            log: format!("Arguments: {}\nRunning...", tool_json_str.trim()),
+                            status: "pending".to_string(),
+                        }
+                    }).await;
                     
                     // Execute tool
                     let tool_result = execute_tool(&tool_name, &tool_call, client).await;
-                    if tool_result.open_url.is_some() {
-                        response_open_url = tool_result.open_url.clone();
+
+                    if let Some(ref url) = tool_result.open_url {
+                        let _ = tx.send(SseEvent::OpenUrl { url: url.clone() }).await;
                     }
+
                     let tool_result_str = tool_result.output;
                     
-                    // Update step
-                    step_log.push_str(&format!("\nResult:\n{}", tool_result_str));
-                    steps[step_index].log = step_log;
-                    steps[step_index].status = "success".to_string();
+                    // Send completed step
+                    let _ = tx.send(SseEvent::Step {
+                        step: AgentStep {
+                            title: format!("Executing Tool: {}", tool_name),
+                            log: format!("Arguments: {}\n\nResult:\n{}", tool_json_str.trim(), tool_result_str),
+                            status: "success".to_string(),
+                        }
+                    }).await;
 
                     // Append model's thought & tool call to history
                     conversation.push(Message {
@@ -718,7 +861,6 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
 
         if !has_tool_call {
             // No tool call, means the agent finished and returned its final response.
-            // Strip tags from final response to make it clean
             let clean_response = output_text
                 .replace("<thought>", "")
                 .replace("</thought>", "")
@@ -728,24 +870,33 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
                 .trim()
                 .to_string();
             
-            final_response = clean_response;
+            // Stream response in chunks for typing effect
+            let chars: Vec<char> = clean_response.chars().collect();
+            let chunk_size = 12; // characters per chunk for smooth typing
+            for chunk in chars.chunks(chunk_size) {
+                let text: String = chunk.iter().collect();
+                let _ = tx.send(SseEvent::Chunk { text }).await;
+                tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+            }
             break;
         }
     }
 
-    if final_response.is_empty() {
-        final_response = "Agent loop exceeded maximum turns without final response.".to_string();
+    if loop_count >= MAX_LOOPS {
+        let _ = tx.send(SseEvent::Chunk {
+            text: "Agent loop exceeded maximum turns without final response.".to_string(),
+        }).await;
     }
 
-    Ok(ChatResponse {
-        steps,
-        response: final_response,
-        open_url: response_open_url,
-    })
+    let _ = tx.send(SseEvent::Done).await;
 }
 
-// --- DEMO MODE MOCK ---
-async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatResponse {
+// --- DEMO MODE STREAMING ---
+async fn run_demo_mode_streaming(
+    messages: &[Message],
+    client: &reqwest::Client,
+    tx: &mpsc::Sender<SseEvent>,
+) {
     let last_user_msg = messages
         .iter()
         .filter(|m| m.role == "user")
@@ -753,28 +904,33 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
         .map(|m| m.content.to_lowercase())
         .unwrap_or_default();
 
-    let mut steps = Vec::new();
     let response: String;
 
     if last_user_msg.contains("sistem") || last_user_msg.contains("system") || last_user_msg.contains("info") {
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "User is asking for system information. I will call the `get_system_info()` tool to retrieve operating system metrics, working directory, and uptime.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "User is asking for system information. I will call the `get_system_info()` tool to retrieve operating system metrics, working directory, and uptime.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
         
         let sys_info = run_system_info();
-        steps.push(AgentStep {
-            title: "Executing Tool: get_system_info".to_string(),
-            log: format!("Arguments: {{}}\n\nResult:\n{}", sys_info),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: get_system_info".to_string(),
+                log: format!("Arguments: {{}}\n\nResult:\n{}", sys_info),
+                status: "success".to_string(),
+            }
+        }).await;
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "I have retrieved the system information. I will now present it clearly to the user, highlighting the operating system, current directory, and server uptime.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "I have retrieved the system information. I will now present it clearly to the user, highlighting the operating system, current directory, and server uptime.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         response = format!(
             "Berikut adalah informasi sistem dari server agen Rust Anda (Mode Demo):\n\n\
@@ -800,24 +956,30 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
             }
         }
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: format!("User requested a math calculation. I will parse the expression `{}` and execute the `calculator` tool to solve it.", expr),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: format!("User requested a math calculation. I will parse the expression `{}` and execute the `calculator` tool to solve it.", expr),
+                status: "success".to_string(),
+            }
+        }).await;
 
         let calc_res = run_calculator(&expr);
-        steps.push(AgentStep {
-            title: "Executing Tool: calculator".to_string(),
-            log: format!("Arguments: {{\n  \"expression\": \"{}\"\n}}\n\nResult:\n{}", expr, calc_res),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: calculator".to_string(),
+                log: format!("Arguments: {{\n  \"expression\": \"{}\"\n}}\n\nResult:\n{}", expr, calc_res),
+                status: "success".to_string(),
+            }
+        }).await;
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "Calculation completed successfully. I will explain the solution steps and provide the final result to the user.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "Calculation completed successfully. I will explain the solution steps and provide the final result to the user.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         response = format!(
             "Hasil perhitungan matematika Anda (Mode Demo):\n\n\
@@ -837,25 +999,31 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
         }
         let path = path_found.unwrap_or_else(|| "Cargo.toml".to_string());
         
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: format!("User requested to read the file `{}`. I will execute the `read_file` tool to retrieve its content.", path),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: format!("User requested to read the file `{}`. I will execute the `read_file` tool to retrieve its content.", path),
+                status: "success".to_string(),
+            }
+        }).await;
         
         let content = run_read_file(&path);
         
-        steps.push(AgentStep {
-            title: "Executing Tool: read_file".to_string(),
-            log: format!("Arguments: {{\n  \"path\": \"{}\"\n}}\n\nResult:\n(Successfully read file content)", path),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: read_file".to_string(),
+                log: format!("Arguments: {{\n  \"path\": \"{}\"\n}}\n\nResult:\n(Successfully read file content)", path),
+                status: "success".to_string(),
+            }
+        }).await;
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "Content of file has been read. I will now display it inside a formatted markdown code block for the user.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "Content of file has been read. I will now display it inside a formatted markdown code block for the user.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         response = format!(
             "Berikut adalah isi dari file `{}` (Mode Demo):\n\n\
@@ -876,25 +1044,31 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
         let path = path_found.unwrap_or_else(|| "test_demo.txt".to_string());
         let mock_content = format!("Hello from Rust Agentic Chatbot Demo Mode!\nCreated at: {}", run_get_time_date());
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: format!("User requested to write a file at `{}`. I will run `write_file` to save the content.", path),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: format!("User requested to write a file at `{}`. I will run `write_file` to save the content.", path),
+                status: "success".to_string(),
+            }
+        }).await;
 
         let write_res = run_write_file(&path, &mock_content);
 
-        steps.push(AgentStep {
-            title: "Executing Tool: write_file".to_string(),
-            log: format!("Arguments: {{\n  \"path\": \"{}\",\n  \"content\": \"{}\"\n}}\n\nResult:\n{}", path, mock_content, write_res),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: write_file".to_string(),
+                log: format!("Arguments: {{\n  \"path\": \"{}\",\n  \"content\": \"{}\"\n}}\n\nResult:\n{}", path, mock_content, write_res),
+                status: "success".to_string(),
+            }
+        }).await;
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "File has been written. I will report the success to the user.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "File has been written. I will report the success to the user.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         response = format!(
             "Berhasil menulis file di `{}` (Mode Demo):\n\n\
@@ -904,6 +1078,45 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
             {}\n\
             ```",
             path, write_res, mock_content
+        );
+    } else if last_user_msg.contains("jalankan") || last_user_msg.contains("execute") || last_user_msg.contains("run ") || last_user_msg.contains("command") {
+        let command = "cargo";
+        let args = vec!["--version".to_string()];
+
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: format!("User wants to execute a command. I will run `execute_command` with `{} {}` to demonstrate shell execution capabilities.", command, args.join(" ")),
+                status: "success".to_string(),
+            }
+        }).await;
+
+        let cmd_res = run_execute_command(command, &args).await;
+
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: execute_command".to_string(),
+                log: format!("Arguments: {{\n  \"command\": \"{}\",\n  \"args\": [\"{}\"]\n}}\n\nResult:\n{}", command, args.join("\", \""), cmd_res),
+                status: "success".to_string(),
+            }
+        }).await;
+
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "Command executed successfully. I will present the output to the user.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
+
+        response = format!(
+            "Perintah `{} {}` berhasil dijalankan (Mode Demo):\n\n\
+            ```\n\
+            {}\n\
+            ```\n\n\
+            **Perintah yang diizinkan**: `{}`\n\n\
+            *Catatan: Tool ini memiliki whitelist keamanan dan timeout 30 detik.*",
+            command, args.join(" "), cmd_res, COMMAND_WHITELIST.join("`, `")
         );
     } else if last_user_msg.contains("cari ") || last_user_msg.contains("search ") || last_user_msg.contains("google ") || last_user_msg.contains("browsing ") {
         let query = if let Some(idx) = last_user_msg.find("cari ") {
@@ -918,25 +1131,31 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
             "Rust Axum framework"
         };
         
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: format!("User wants to search the web for `{}`. I will call `search_web` to get matching web pages.", query),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: format!("User wants to search the web for `{}`. I will call `search_web` to get matching web pages.", query),
+                status: "success".to_string(),
+            }
+        }).await;
 
         let search_res = run_search_web(client, query).await;
 
-        steps.push(AgentStep {
-            title: "Executing Tool: search_web".to_string(),
-            log: format!("Arguments: {{\n  \"query\": \"{}\"\n}}\n\nResult:\n(Fetched search results)", query),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: search_web".to_string(),
+                log: format!("Arguments: {{\n  \"query\": \"{}\"\n}}\n\nResult:\n(Fetched search results)", query),
+                status: "success".to_string(),
+            }
+        }).await;
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "Web search results retrieved. I will format them nicely in markdown for presentation.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "Web search results retrieved. I will format them nicely in markdown for presentation.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         response = format!(
             "Berikut adalah hasil pencarian web ril untuk kata kunci `{}` (Mode Demo):\n\n\
@@ -953,25 +1172,31 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
             }
         }
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: format!("User provided a URL: `{}`. I will execute the `fetch_url` tool to scrape and read the web page text.", url_found),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: format!("User provided a URL: `{}`. I will execute the `fetch_url` tool to scrape and read the web page text.", url_found),
+                status: "success".to_string(),
+            }
+        }).await;
 
         let fetch_res = run_fetch_url(client, &url_found).await;
 
-        steps.push(AgentStep {
-            title: "Executing Tool: fetch_url".to_string(),
-            log: format!("Arguments: {{\n  \"url\": \"{}\"\n}}\n\nResult:\n(Successfully fetched page content)", url_found),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: fetch_url".to_string(),
+                log: format!("Arguments: {{\n  \"url\": \"{}\"\n}}\n\nResult:\n(Successfully fetched page content)", url_found),
+                status: "success".to_string(),
+            }
+        }).await;
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "Web page content has been fetched. I will now present a summary or the first few paragraphs to the user.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "Web page content has been fetched. I will now present a summary or the first few paragraphs to the user.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         response = format!(
             "Berikut adalah konten teks dari URL `{}` (Mode Demo):\n\n\
@@ -981,24 +1206,30 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
             url_found, fetch_res
         );
     } else if last_user_msg.contains("file") || last_user_msg.contains("direktori") || last_user_msg.contains("ls") || last_user_msg.contains("list") {
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "User wants to see the files inside the directory. I will call `list_directory()` for the current directory root.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "User wants to see the files inside the directory. I will call `list_directory()` for the current directory root.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         let dir_res = run_list_directory(None);
-        steps.push(AgentStep {
-            title: "Executing Tool: list_directory".to_string(),
-            log: format!("Arguments: {{}}\n\nResult:\n{}", dir_res),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: list_directory".to_string(),
+                log: format!("Arguments: {{}}\n\nResult:\n{}", dir_res),
+                status: "success".to_string(),
+            }
+        }).await;
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "Directory contents retrieved. I will format the directory contents list neatly in markdown code block for readability.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "Directory contents retrieved. I will format the directory contents list neatly in markdown code block for readability.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         response = format!(
             "Berikut adalah daftar file di direktori kerja server agen (Mode Demo):\n\n\
@@ -1017,26 +1248,34 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
             "Selamat pagi developer! 🦀\n\nSedang mengembangkan agen AI otonom dengan Rust hari ini. Kecepatannya luar biasa!\n\nBagaimana stack andalan kalian tahun ini? Let's discuss! 👇".to_string()
         };
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: format!("User wants to post to Threads. I will analyze the content and optimize it for the Threads timeline algorithm (hook, length, emojis, and ending question)."),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "User wants to post to Threads. I will analyze the content and optimize it for the Threads timeline algorithm (hook, length, emojis, and ending question).".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         let encoded = url_encode(&post_text);
         let intent_url = format!("https://www.threads.net/intent/post?text={}", encoded);
 
-        steps.push(AgentStep {
-            title: "Executing Tool: post_to_threads".to_string(),
-            log: format!("Arguments: {{\n  \"text\": \"{}\"\n}}\n\nResult:\nSuccessfully generated Threads Intent URL. Opening browser tab...", post_text),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: post_to_threads".to_string(),
+                log: format!("Arguments: {{\n  \"text\": \"{}\"\n}}\n\nResult:\nSuccessfully generated Threads Intent URL. Opening browser tab...", post_text),
+                status: "success".to_string(),
+            }
+        }).await;
 
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "Threads post intent URL generated. Sending command to open a new tab on the user's browser.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "Threads post intent URL generated. Sending command to open a new tab on the user's browser.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
+
+        let _ = tx.send(SseEvent::OpenUrl { url: intent_url }).await;
 
         response = format!(
             "🚀 **Membuka postingan di Threads...** (Mode Demo)\n\n\
@@ -1051,18 +1290,14 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
             *Tab baru Threads web composer seharusnya terbuka otomatis secara lokal. Klik 'Post' untuk mempublikasikan!*",
             post_text, post_text.chars().count()
         );
-
-        return ChatResponse {
-            steps,
-            response,
-            open_url: Some(intent_url),
-        };
     } else {
-        steps.push(AgentStep {
-            title: "Thinking Process".to_string(),
-            log: "User greeted me or asked a general question. Since I am in Demo Mode, I will introduce my capabilities and explain how the user can activate the full Agent features with their Gemini API key.".to_string(),
-            status: "success".to_string(),
-        });
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "User greeted me or asked a general question. Since I am in Demo Mode, I will introduce my capabilities and explain how the user can activate the full Agent features with their Gemini API key.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
 
         response = format!(
             "Halo! Saya adalah **Rust Agentic Chatbot** 🤖. Saat ini saya berjalan dalam **Mode Demo** karena Anda belum memasang API Key.\n\n\
@@ -1075,14 +1310,22 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
                * 📄 **Baca File**: Membuka isi file proyek.\n\
                * ✏️ **Tulis File**: Menulis atau mengedit file proyek.\n\
                * 🌐 **Pencarian Web**: Mencari informasi di internet secara langsung.\n\
-               * 🔗 **Scrape URL**: Mengambil data teks dari halaman web.\n\n\
+               * 🔗 **Scrape URL**: Mengambil data teks dari halaman web.\n\
+               * ⚡ **Eksekusi Perintah**: Menjalankan perintah shell (cargo, git, dll).\n\n\
             **Cara Mengaktifkan Fitur Penuh:**\n\
             * Klik ikon **Pengaturan (Gir)** ⚙️ di pojok kiri bawah UI.\n\
             * Masukkan **Gemini API Key** Anda.\n\
-            * Pilih model (seperti `gemini-2.0-flash` atau `gemini-1.5-pro`).\n\
+            * Pilih model (seperti `gemini-2.5-flash` atau `gemini-2.5-pro`).\n\
             * Mulai ajukan pertanyaan kompleks dan perhatikan saya bekerja otonom menggunakan perkakas saya!"
         );
     }
 
-    ChatResponse { steps, response, open_url: None }
+    // Stream the response in chunks for typing effect
+    let chars: Vec<char> = response.chars().collect();
+    let chunk_size = 12;
+    for chunk in chars.chunks(chunk_size) {
+        let text: String = chunk.iter().collect();
+        let _ = tx.send(SseEvent::Chunk { text }).await;
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
 }

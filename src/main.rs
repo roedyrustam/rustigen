@@ -2,14 +2,19 @@ use axum::{
     routing::post,
     Router,
     Json,
-    http::StatusCode,
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
 };
 use tower_http::services::{ServeDir, ServeFile};
+use std::convert::Infallible;
 use tower_http::cors::CorsLayer;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tokio_stream::wrappers::ReceiverStream;
+use futures_util::stream::StreamExt;
 
 mod agent;
 
@@ -65,15 +70,26 @@ async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+/// SSE streaming endpoint — sends events as the agent processes
 async fn chat_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(payload): Json<agent::ChatRequest>,
 ) -> impl IntoResponse {
-    match agent::run_agent_loop(payload, &state.client, state.env_api_key.clone()).await {
-        Ok(res) => (StatusCode::OK, Json(res)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        ).into_response(),
-    }
+    let (tx, rx) = tokio::sync::mpsc::channel::<agent::SseEvent>(64);
+
+    let client = state.client.clone();
+    let env_key = state.env_api_key.clone();
+
+    // Spawn the agent loop in background — it sends events through the channel
+    tokio::spawn(async move {
+        agent::run_agent_loop_streaming(payload, &client, env_key, tx).await;
+    });
+
+    // Convert the mpsc receiver into an SSE stream
+    let stream = ReceiverStream::new(rx).map(|event| -> Result<Event, Infallible> {
+        let json = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
+        Ok(Event::default().data(json))
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }

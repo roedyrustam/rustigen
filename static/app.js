@@ -4,8 +4,9 @@ let state = {
     activeSessionId: null,
     settings: {
         apiKey: "",
-        model: "gemini-1.5-flash",
-        temperature: 0.7
+        model: "gemini-2.5-flash",
+        temperature: 0.7,
+        maxContext: 20
     }
 };
 
@@ -21,6 +22,11 @@ const currentChatTitle = document.getElementById("current-chat-title");
 const statusBadge = document.getElementById("status-badge");
 const statusText = document.getElementById("status-text");
 
+// Sidebar Elements (mobile)
+const sidebar = document.getElementById("sidebar");
+const sidebarOverlay = document.getElementById("sidebar-overlay");
+const toggleSidebarBtn = document.getElementById("toggle-sidebar-btn");
+
 // Settings Modal Elements
 const settingsModal = document.getElementById("settings-modal");
 const openSettingsBtn = document.getElementById("open-settings-btn");
@@ -31,6 +37,8 @@ const settingApiKey = document.getElementById("setting-api-key");
 const settingModel = document.getElementById("setting-model");
 const settingTempSlider = document.getElementById("setting-temp-slider");
 const settingTempVal = document.getElementById("setting-temp-val");
+const settingContextSlider = document.getElementById("setting-context-slider");
+const settingContextVal = document.getElementById("setting-context-val");
 
 // Initial Setup
 document.addEventListener("DOMContentLoaded", () => {
@@ -66,6 +74,10 @@ function setupEventListeners() {
     newChatBtn.addEventListener("click", createNewSession);
     clearChatBtn.addEventListener("click", deleteActiveSession);
 
+    // Mobile Sidebar Toggle
+    toggleSidebarBtn.addEventListener("click", toggleSidebar);
+    sidebarOverlay.addEventListener("click", closeSidebar);
+
     // Modal Triggers
     openSettingsBtn.addEventListener("click", () => toggleModal(true));
     closeSettingsBtn.addEventListener("click", () => toggleModal(false));
@@ -79,20 +91,36 @@ function setupEventListeners() {
     settingTempSlider.addEventListener("input", (e) => {
         settingTempVal.textContent = e.target.value;
     });
+    settingContextSlider.addEventListener("input", (e) => {
+        settingContextVal.textContent = e.target.value;
+    });
 }
 
-// Settings Handlers
+// --- SIDEBAR MOBILE ---
+function toggleSidebar() {
+    sidebar.classList.toggle("open");
+    sidebarOverlay.classList.toggle("hidden");
+}
+
+function closeSidebar() {
+    sidebar.classList.remove("open");
+    sidebarOverlay.classList.add("hidden");
+}
+
+// --- SETTINGS ---
 function loadSettings() {
     const saved = localStorage.getItem("rust_agent_settings");
     if (saved) {
-        state.settings = JSON.parse(saved);
+        state.settings = { ...state.settings, ...JSON.parse(saved) };
     }
     
     // Populate form fields
     settingApiKey.value = state.settings.apiKey || "";
-    settingModel.value = state.settings.model || "gemini-1.5-flash";
+    settingModel.value = state.settings.model || "gemini-2.5-flash";
     settingTempSlider.value = state.settings.temperature || 0.7;
     settingTempVal.textContent = state.settings.temperature || 0.7;
+    settingContextSlider.value = state.settings.maxContext || 20;
+    settingContextVal.textContent = state.settings.maxContext || 20;
 
     updateStatusBadge();
 }
@@ -101,27 +129,31 @@ function saveSettings() {
     state.settings.apiKey = settingApiKey.value.trim();
     state.settings.model = settingModel.value;
     state.settings.temperature = parseFloat(settingTempSlider.value);
+    state.settings.maxContext = parseInt(settingContextSlider.value);
 
     localStorage.setItem("rust_agent_settings", JSON.stringify(state.settings));
     toggleModal(false);
     updateStatusBadge();
-    showNotification("Pengaturan disimpan successfully!");
+    showNotification("✅ Pengaturan berhasil disimpan!");
 }
 
 function resetSettings() {
     state.settings = {
         apiKey: "",
-        model: "gemini-1.5-flash",
-        temperature: 0.7
+        model: "gemini-2.5-flash",
+        temperature: 0.7,
+        maxContext: 20
     };
     settingApiKey.value = "";
-    settingModel.value = "gemini-1.5-flash";
+    settingModel.value = "gemini-2.5-flash";
     settingTempSlider.value = 0.7;
     settingTempVal.textContent = "0.7";
+    settingContextSlider.value = 20;
+    settingContextVal.textContent = "20";
 
     localStorage.removeItem("rust_agent_settings");
     updateStatusBadge();
-    showNotification("Pengaturan di-reset ke default.");
+    showNotification("🔄 Pengaturan di-reset ke default.");
 }
 
 function toggleModal(show) {
@@ -142,7 +174,7 @@ function updateStatusBadge() {
     }
 }
 
-// Session Handlers
+// --- SESSION HANDLERS ---
 function loadSessions() {
     const saved = localStorage.getItem("rust_agent_sessions");
     if (saved) {
@@ -177,6 +209,7 @@ function createNewSession() {
     saveSessions();
     renderChatList();
     renderActiveChat();
+    closeSidebar();
     
     chatInput.focus();
 }
@@ -185,6 +218,7 @@ function selectSession(id) {
     state.activeSessionId = id;
     renderChatList();
     renderActiveChat();
+    closeSidebar();
 }
 
 function deleteActiveSession() {
@@ -206,7 +240,7 @@ function deleteActiveSession() {
     }
 }
 
-// Rendering UI
+// --- RENDERING ---
 function renderChatList() {
     chatList.innerHTML = "";
     state.sessions.forEach(session => {
@@ -266,22 +300,36 @@ function renderActiveChat() {
         // Render messages
         session.messages.forEach(msg => {
             if (msg.role === "user" || msg.role === "model") {
-                // If it is a tool result or internal formatting, we don't display it directly as user bubble
+                // If it is a tool result or internal formatting, we don't display it directly
                 if (msg.content.startsWith("Tool result:")) return;
                 if (msg.content.includes("<tool_call>") && msg.content.includes("</tool_call>")) return;
 
-                renderMessageBubble(msg.role, msg.content, msg.steps);
+                renderMessageBubble(msg.role, msg.content, msg.steps, msg.timestamp);
             }
         });
     }
     scrollToBottom();
 }
 
-function renderMessageBubble(role, content, steps) {
+function getTimestamp() {
+    const now = new Date();
+    return now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderMessageBubble(role, content, steps, timestamp) {
     welcomeContainer.style.display = "none";
     
     const row = document.createElement("div");
     row.className = `message-row ${role}`;
+
+    // Avatar
+    const avatar = document.createElement("div");
+    avatar.className = "message-avatar";
+    avatar.textContent = role === "model" ? "🤖" : "👤";
+
+    // Content wrapper
+    const contentWrapper = document.createElement("div");
+    contentWrapper.className = "message-content-wrapper";
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
@@ -289,10 +337,21 @@ function renderMessageBubble(role, content, steps) {
     // Format markdown to HTML
     bubble.innerHTML = formatMarkdown(content);
 
-    // Add Copy buttons to code blocks
-    addCopyButtons(bubble);
+    // Add Copy buttons and language labels to code blocks
+    addCodeEnhancements(bubble);
 
-    row.appendChild(bubble);
+    contentWrapper.appendChild(bubble);
+
+    // Timestamp
+    if (timestamp) {
+        const ts = document.createElement("div");
+        ts.className = "message-timestamp";
+        ts.textContent = timestamp;
+        contentWrapper.appendChild(ts);
+    }
+
+    row.appendChild(avatar);
+    row.appendChild(contentWrapper);
     chatMessages.appendChild(row);
 
     // If model response has reasoning steps, display them before the response bubble
@@ -301,6 +360,7 @@ function renderMessageBubble(role, content, steps) {
     }
 
     scrollToBottom();
+    return { row, bubble, contentWrapper };
 }
 
 function renderThinkingSteps(steps, messageRow) {
@@ -371,6 +431,10 @@ function showTypingIndicator() {
     row.className = "message-row model";
     row.id = "typing-indicator-row";
 
+    const avatar = document.createElement("div");
+    avatar.className = "message-avatar";
+    avatar.textContent = "🤖";
+
     const bubble = document.createElement("div");
     bubble.className = "typing-bubble";
     bubble.innerHTML = `
@@ -379,6 +443,7 @@ function showTypingIndicator() {
         <div class="typing-dot"></div>
     `;
 
+    row.appendChild(avatar);
     row.appendChild(bubble);
     chatMessages.appendChild(row);
     scrollToBottom();
@@ -389,7 +454,9 @@ function removeTypingIndicator() {
     if (indicator) indicator.remove();
 }
 
-// Send Message Flow
+// --- SEND MESSAGE WITH SSE STREAMING ---
+let activeAbortController = null;
+
 async function sendMessage() {
     const text = chatInput.value.trim();
     if (!text) return;
@@ -408,71 +475,265 @@ async function sendMessage() {
     }
 
     // Add User Message to State
-    const userMsg = { role: "user", content: text };
+    const timestamp = getTimestamp();
+    const userMsg = { role: "user", content: text, timestamp };
     session.messages.push(userMsg);
     saveSessions();
 
     // Render User Message
-    renderMessageBubble("user", text);
+    renderMessageBubble("user", text, null, timestamp);
 
     // Show Loader
     showTypingIndicator();
 
+    // Abort previous stream if any
+    if (activeAbortController) {
+        activeAbortController.abort();
+    }
+    activeAbortController = new AbortController();
+
     try {
         // Construct conversation payload
-        // To save context size and respect backend expectations, map roles correctly
-        const payloadMessages = session.messages.map(m => ({
-            role: m.role,
-            content: m.content
-        }));
+        const payloadMessages = session.messages
+            .filter(m => m.role === "user" || m.role === "model")
+            .map(m => ({ role: m.role, content: m.content }));
 
         const response = await fetch("/api/chat", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 messages: payloadMessages,
                 api_key: state.settings.apiKey || null,
                 model: state.settings.model,
-                temperature: state.settings.temperature
-            })
+                temperature: state.settings.temperature,
+                max_context: state.settings.maxContext
+            }),
+            signal: activeAbortController.signal
         });
 
         if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.error || "Gagal menghubungi agen.");
+            const errText = await response.text();
+            throw new Error(errText || "Gagal menghubungi agen.");
         }
 
-        const data = await response.json(); // { steps: [], response: "" }
-
-        // Remove Loader
+        // Remove typing indicator
         removeTypingIndicator();
 
-        // Add Model Response to State
+        // Prepare streaming UI elements
+        const modelTimestamp = getTimestamp();
+        let steps = [];
+        let responseText = "";
+        let thinkingContainer = null;
+        let responseBubble = null;
+        let responseRow = null;
+        let responseWrapper = null;
+        let streamingCursor = null;
+
+        // Read SSE stream
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Parse SSE events from buffer
+            const lines = buffer.split("\n");
+            buffer = lines.pop(); // Keep incomplete last line in buffer
+
+            for (const line of lines) {
+                if (line.startsWith("data:")) {
+                    const jsonStr = line.slice(5).trim();
+                    if (!jsonStr) continue;
+
+                    try {
+                        const event = JSON.parse(jsonStr);
+                        
+                        switch (event.type) {
+                            case "step": {
+                                const step = event.step;
+                                steps.push(step);
+
+                                // Create or update the thinking container
+                                if (!thinkingContainer) {
+                                    thinkingContainer = createLiveThinkingContainer();
+                                    chatMessages.appendChild(thinkingContainer);
+                                }
+                                addStepToThinkingContainer(thinkingContainer, step, steps.length);
+                                scrollToBottom();
+                                break;
+                            }
+
+                            case "chunk": {
+                                // Create response bubble on first chunk
+                                if (!responseBubble) {
+                                    welcomeContainer.style.display = "none";
+                                    responseRow = document.createElement("div");
+                                    responseRow.className = "message-row model";
+
+                                    const avatar = document.createElement("div");
+                                    avatar.className = "message-avatar";
+                                    avatar.textContent = "🤖";
+
+                                    responseWrapper = document.createElement("div");
+                                    responseWrapper.className = "message-content-wrapper";
+
+                                    responseBubble = document.createElement("div");
+                                    responseBubble.className = "message-bubble";
+
+                                    streamingCursor = document.createElement("span");
+                                    streamingCursor.className = "streaming-cursor";
+
+                                    responseBubble.appendChild(streamingCursor);
+                                    responseWrapper.appendChild(responseBubble);
+
+                                    responseRow.appendChild(avatar);
+                                    responseRow.appendChild(responseWrapper);
+                                    chatMessages.appendChild(responseRow);
+                                }
+
+                                responseText += event.text;
+                                
+                                // Remove cursor, re-render content, add cursor back
+                                if (streamingCursor && streamingCursor.parentNode) {
+                                    streamingCursor.remove();
+                                }
+                                responseBubble.innerHTML = formatMarkdown(responseText);
+                                responseBubble.appendChild(streamingCursor);
+                                scrollToBottom();
+                                break;
+                            }
+
+                            case "open_url": {
+                                window.open(event.url, '_blank');
+                                break;
+                            }
+
+                            case "error": {
+                                removeTypingIndicator();
+                                renderMessageBubble("model", `❌ **Error:** ${event.message}\n\n*Silakan cek koneksi internet Anda atau konfigurasikan ulang API Key Anda di menu Pengaturan.*`, null, getTimestamp());
+                                break;
+                            }
+
+                            case "done": {
+                                // Finalize: remove streaming cursor
+                                if (streamingCursor && streamingCursor.parentNode) {
+                                    streamingCursor.remove();
+                                }
+                                // Re-render final content with code enhancements
+                                if (responseBubble) {
+                                    responseBubble.innerHTML = formatMarkdown(responseText);
+                                    addCodeEnhancements(responseBubble);
+
+                                    // Add timestamp
+                                    const ts = document.createElement("div");
+                                    ts.className = "message-timestamp";
+                                    ts.textContent = modelTimestamp;
+                                    responseWrapper.appendChild(ts);
+                                }
+                                break;
+                            }
+                        }
+                    } catch (parseErr) {
+                        console.warn("Failed to parse SSE event:", jsonStr, parseErr);
+                    }
+                }
+            }
+        }
+
+        // Save model response to state
         const modelMsg = {
             role: "model",
-            content: data.response,
-            steps: data.steps
+            content: responseText,
+            steps: steps,
+            timestamp: modelTimestamp
         };
         session.messages.push(modelMsg);
         saveSessions();
 
-        // Render response
-        renderMessageBubble("model", data.response, data.steps);
-
-        // Open browser tab if URL is provided
-        if (data.open_url) {
-            window.open(data.open_url, '_blank');
-        }
-
     } catch (error) {
+        if (error.name === 'AbortError') return;
         removeTypingIndicator();
-        renderMessageBubble("model", `❌ **Error:** ${error.message}\n\n*Silakan cek koneksi internet Anda atau konfigurasikan ulang API Key Anda di menu Pengaturan.*`);
+        renderMessageBubble("model", `❌ **Error:** ${error.message}\n\n*Silakan cek koneksi internet Anda atau konfigurasikan ulang API Key Anda di menu Pengaturan.*`, null, getTimestamp());
+    } finally {
+        activeAbortController = null;
     }
 }
 
-// Utility Helpers
+// --- LIVE THINKING CONTAINER ---
+function createLiveThinkingContainer() {
+    const container = document.createElement("div");
+    container.className = "thinking-container open"; // Start open for live streaming
+
+    const header = document.createElement("div");
+    header.className = "thinking-header";
+
+    const titleWrapper = document.createElement("div");
+    titleWrapper.className = "thinking-title-wrapper";
+    titleWrapper.dataset.stepCount = "0";
+    titleWrapper.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>
+        <span>Proses Berpikir Agen...</span>
+    `;
+
+    const chevron = document.createElement("div");
+    chevron.className = "thinking-chevron";
+    chevron.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+    `;
+
+    header.appendChild(titleWrapper);
+    header.appendChild(chevron);
+    container.appendChild(header);
+
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "thinking-content";
+
+    const stepsList = document.createElement("div");
+    stepsList.className = "thinking-steps-list";
+
+    contentDiv.appendChild(stepsList);
+    container.appendChild(contentDiv);
+
+    // Collapsible
+    header.addEventListener("click", () => {
+        container.classList.toggle("open");
+    });
+
+    return container;
+}
+
+function addStepToThinkingContainer(container, step, count) {
+    const titleSpan = container.querySelector(".thinking-title-wrapper span");
+    if (titleSpan) {
+        titleSpan.textContent = `Proses Berpikir Agen (${count} Langkah)`;
+    }
+
+    const stepsList = container.querySelector(".thinking-steps-list");
+    
+    const stepItem = document.createElement("div");
+    stepItem.className = `step-item ${step.status}`;
+
+    const stepHeader = document.createElement("div");
+    stepHeader.className = "step-header";
+    stepHeader.innerHTML = `
+        <span>${step.title}</span>
+        <span class="step-status">${step.status === 'success' ? 'selesai' : step.status === 'pending' ? 'proses' : 'gagal'}</span>
+    `;
+
+    const stepLog = document.createElement("div");
+    stepLog.className = "step-log";
+    stepLog.textContent = step.log;
+
+    stepItem.appendChild(stepHeader);
+    stepItem.appendChild(stepLog);
+    stepsList.appendChild(stepItem);
+}
+
+// --- UTILITY HELPERS ---
 function scrollToBottom() {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -515,7 +776,7 @@ function updateUIState() {
     }
 }
 
-// Markdown Formatter Helper
+// --- MARKDOWN FORMATTER ---
 function formatMarkdown(text) {
     if (!text) return "";
     
@@ -526,8 +787,9 @@ function formatMarkdown(text) {
         .replace(/>/g, "&gt;");
 
     // Replace Markdown Code Blocks: ```lang code ```
-    escaped = escaped.replace(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)```/gim, (match, code) => {
-        return `<pre><code>${code.trim()}</code></pre>`;
+    escaped = escaped.replace(/```([a-zA-Z0-9]*)\n([\s\S]*?)```/gim, (match, lang, code) => {
+        const langLabel = lang ? `<span class="code-lang-label">${lang}</span>` : '';
+        return `<pre>${langLabel}<code>${code.trim()}</code></pre>`;
     });
 
     // Replace Inline Code: `code`
@@ -555,7 +817,6 @@ function formatMarkdown(text) {
     escaped = escaped.replace(/<\/ol>\s*<ol>/gim, "");
 
     // Line breaks (replace \n with <br>, except inside pre blocks)
-    // We split by pre blocks to avoid adding <br> tags to code block formatting
     const parts = escaped.split(/(<pre>[\s\S]*?<\/pre>)/g);
     for (let i = 0; i < parts.length; i++) {
         if (!parts[i].startsWith("<pre>")) {
@@ -566,11 +827,12 @@ function formatMarkdown(text) {
     return parts.join("");
 }
 
-function addCopyButtons(container) {
+function addCodeEnhancements(container) {
     const preBlocks = container.querySelectorAll("pre");
     preBlocks.forEach((pre) => {
         pre.style.position = "relative";
         
+        // Copy button
         const copyBtn = document.createElement("button");
         copyBtn.className = "copy-code-btn";
         copyBtn.innerHTML = `
