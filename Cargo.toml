@@ -1,0 +1,24 @@
+[package]
+name = "my-ai-agent"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.40.0", features = ["full"] }
+axum = { version = "0.7.7", features = ["macros"] }
+tower-http = { version = "0.6.1", features = ["fs", "cors"] }
+serde = { version = "1.0.210", features = ["derive"] }
+serde_json = "1.0.128"
+reqwest = { version = "0.12.7", features = ["json", "stream"] }
+anyhow = "1.0.89"
+futures-util = "0.3.30"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+chrono = "0.4.38"
+
+[profile.release]
+opt-level = 3          # Max optimization
+lto = true             # Enable Link-Time Optimization
+codegen-units = 1      # Maximize compiler optimization passes
+panic = "abort"        # Strip panic unwinding machinery to reduce binary size
+strip = true           # Automatically strip symbols/debug info
