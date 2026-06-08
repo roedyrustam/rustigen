@@ -6,7 +6,8 @@ let state = {
         apiKey: "",
         model: "gemini-2.5-flash",
         temperature: 0.7,
-        maxContext: 20
+        maxContext: 20,
+        systemPrompt: ""
     }
 };
 
@@ -39,6 +40,23 @@ const settingTempSlider = document.getElementById("setting-temp-slider");
 const settingTempVal = document.getElementById("setting-temp-val");
 const settingContextSlider = document.getElementById("setting-context-slider");
 const settingContextVal = document.getElementById("setting-context-val");
+const settingSystemPrompt = document.getElementById("setting-system-prompt");
+
+// Quick Actions Chips
+const quickActions = document.getElementById("quick-actions");
+
+// Export button
+const exportChatBtn = document.getElementById("export-chat-btn");
+
+// Search inputs
+const searchChats = document.getElementById("search-chats");
+const clearSearchBtn = document.getElementById("clear-search-btn");
+
+// Keyboard Shortcuts Modal Elements
+const shortcutsModal = document.getElementById("shortcuts-modal");
+const openShortcutsBtn = document.getElementById("open-shortcuts-btn");
+const closeShortcutsBtn = document.getElementById("close-shortcuts-btn");
+const closeShortcutsOkBtn = document.getElementById("close-shortcuts-ok-btn");
 
 // Initial Setup
 document.addEventListener("DOMContentLoaded", () => {
@@ -94,6 +112,110 @@ function setupEventListeners() {
     settingContextSlider.addEventListener("input", (e) => {
         settingContextVal.textContent = e.target.value;
     });
+
+    // Quick Actions Click Handler
+    if (quickActions) {
+        quickActions.addEventListener("click", (e) => {
+            const btn = e.target.closest(".quick-action-btn");
+            if (btn) {
+                const promptText = btn.dataset.prompt;
+                if (promptText) {
+                    chatInput.value = promptText;
+                    chatInput.style.height = "auto";
+                    chatInput.style.height = (chatInput.scrollHeight) + "px";
+                    chatInput.focus();
+                    sendMessage();
+                }
+            }
+        });
+    }
+
+    // Export Chat Button
+    if (exportChatBtn) {
+        exportChatBtn.addEventListener("click", exportChat);
+    }
+
+    // Search chats in sidebar
+    if (searchChats) {
+        searchChats.addEventListener("input", (e) => {
+            const query = e.target.value.toLowerCase();
+            if (query) {
+                clearSearchBtn.classList.remove("hidden");
+            } else {
+                clearSearchBtn.classList.add("hidden");
+            }
+            renderChatList();
+        });
+    }
+    if (clearSearchBtn) {
+        clearSearchBtn.addEventListener("click", () => {
+            searchChats.value = "";
+            clearSearchBtn.classList.add("hidden");
+            renderChatList();
+            searchChats.focus();
+        });
+    }
+
+    // Shortcuts Modal Triggers
+    if (openShortcutsBtn) {
+        openShortcutsBtn.addEventListener("click", () => toggleShortcutsModal(true));
+    }
+    if (closeShortcutsBtn) {
+        closeShortcutsBtn.addEventListener("click", () => toggleShortcutsModal(false));
+    }
+    if (closeShortcutsOkBtn) {
+        closeShortcutsOkBtn.addEventListener("click", () => toggleShortcutsModal(false));
+    }
+    if (shortcutsModal) {
+        shortcutsModal.addEventListener("click", (e) => {
+            if (e.target === shortcutsModal) toggleShortcutsModal(false);
+        });
+    }
+
+    // Global keyboard shortcuts
+    document.addEventListener("keydown", (e) => {
+        // Escape key to close modals
+        if (e.key === "Escape") {
+            toggleModal(false);
+            toggleShortcutsModal(false);
+            closeSidebar();
+        }
+
+        // Ctrl combinations
+        if (e.ctrlKey) {
+            switch (e.key.toLowerCase()) {
+                case "n":
+                    e.preventDefault();
+                    createNewSession();
+                    break;
+                case "k":
+                    e.preventDefault();
+                    if (searchChats) {
+                        searchChats.focus();
+                        searchChats.select();
+                    }
+                    break;
+                case "e":
+                    e.preventDefault();
+                    exportChat();
+                    break;
+                case ",":
+                    e.preventDefault();
+                    toggleModal(true);
+                    break;
+                case "/":
+                    e.preventDefault();
+                    toggleShortcutsModal(true);
+                    break;
+            }
+        } else if (e.key === "?") {
+            // Only open shortcuts if we're not inside input/textarea
+            if (document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") {
+                e.preventDefault();
+                toggleShortcutsModal(true);
+            }
+        }
+    });
 }
 
 // --- SIDEBAR MOBILE ---
@@ -121,6 +243,7 @@ function loadSettings() {
     settingTempVal.textContent = state.settings.temperature || 0.7;
     settingContextSlider.value = state.settings.maxContext || 20;
     settingContextVal.textContent = state.settings.maxContext || 20;
+    settingSystemPrompt.value = state.settings.systemPrompt || "";
 
     updateStatusBadge();
 }
@@ -130,6 +253,7 @@ function saveSettings() {
     state.settings.model = settingModel.value;
     state.settings.temperature = parseFloat(settingTempSlider.value);
     state.settings.maxContext = parseInt(settingContextSlider.value);
+    state.settings.systemPrompt = settingSystemPrompt.value.trim();
 
     localStorage.setItem("rust_agent_settings", JSON.stringify(state.settings));
     toggleModal(false);
@@ -142,7 +266,8 @@ function resetSettings() {
         apiKey: "",
         model: "gemini-2.5-flash",
         temperature: 0.7,
-        maxContext: 20
+        maxContext: 20,
+        systemPrompt: ""
     };
     settingApiKey.value = "";
     settingModel.value = "gemini-2.5-flash";
@@ -150,6 +275,7 @@ function resetSettings() {
     settingTempVal.textContent = "0.7";
     settingContextSlider.value = 20;
     settingContextVal.textContent = "20";
+    settingSystemPrompt.value = "";
 
     localStorage.removeItem("rust_agent_settings");
     updateStatusBadge();
@@ -243,7 +369,17 @@ function deleteActiveSession() {
 // --- RENDERING ---
 function renderChatList() {
     chatList.innerHTML = "";
-    state.sessions.forEach(session => {
+    const query = searchChats ? searchChats.value.toLowerCase().trim() : "";
+    
+    const filteredSessions = state.sessions.filter(session => {
+        if (!query) return true;
+        if (session.title.toLowerCase().includes(query)) return true;
+        const firstUserMsg = session.messages.find(m => m.role === "user");
+        if (firstUserMsg && firstUserMsg.content.toLowerCase().includes(query)) return true;
+        return false;
+    });
+
+    filteredSessions.forEach(session => {
         const item = document.createElement("div");
         item.className = `chat-item ${session.id === state.activeSessionId ? 'active' : ''}`;
         item.addEventListener("click", () => selectSession(session.id));
@@ -264,6 +400,15 @@ function renderChatList() {
         item.appendChild(delBtn);
         chatList.appendChild(item);
     });
+
+    if (filteredSessions.length === 0 && query) {
+        const noResults = document.createElement("div");
+        noResults.className = "help-text";
+        noResults.style.textAlign = "center";
+        noResults.style.padding = "1.5rem 1rem";
+        noResults.textContent = "Tidak ada percakapan ditemukan.";
+        chatList.appendChild(noResults);
+    }
 }
 
 function deleteSession(id) {
@@ -294,8 +439,10 @@ function renderActiveChat() {
     if (session.messages.length === 0) {
         welcomeContainer.style.display = "flex";
         chatMessages.appendChild(welcomeContainer);
+        if (quickActions) quickActions.classList.remove("hidden");
     } else {
         welcomeContainer.style.display = "none";
+        if (quickActions) quickActions.classList.add("hidden");
         
         // Render messages
         session.messages.forEach(msg => {
@@ -308,6 +455,7 @@ function renderActiveChat() {
             }
         });
     }
+    updateUIState();
     scrollToBottom();
 }
 
@@ -461,6 +609,11 @@ async function sendMessage() {
     const text = chatInput.value.trim();
     if (!text) return;
 
+    // Hide quick action chips once message is sent
+    if (quickActions) {
+        quickActions.classList.add("hidden");
+    }
+
     // Reset input
     chatInput.value = "";
     chatInput.style.height = "auto";
@@ -506,7 +659,8 @@ async function sendMessage() {
                 api_key: state.settings.apiKey || null,
                 model: state.settings.model,
                 temperature: state.settings.temperature,
-                max_context: state.settings.maxContext
+                max_context: state.settings.maxContext,
+                system_prompt: state.settings.systemPrompt || null
             }),
             signal: activeAbortController.signal
         });
@@ -765,14 +919,17 @@ function showNotification(text) {
 }
 
 function updateUIState() {
-    // Enable or disable clear chat button based on whether active session has messages
+    // Enable or disable clear chat button and export button based on whether active session has messages
     const session = state.sessions.find(s => s.id === state.activeSessionId);
-    if (session && session.messages.length > 0) {
-        clearChatBtn.style.opacity = "1";
-        clearChatBtn.style.pointerEvents = "auto";
-    } else {
-        clearChatBtn.style.opacity = "0.5";
-        clearChatBtn.style.pointerEvents = "none";
+    const hasMessages = session && session.messages.length > 0;
+    
+    if (clearChatBtn) {
+        clearChatBtn.style.opacity = hasMessages ? "1" : "0.5";
+        clearChatBtn.style.pointerEvents = hasMessages ? "auto" : "none";
+    }
+    if (exportChatBtn) {
+        exportChatBtn.style.opacity = hasMessages ? "1" : "0.5";
+        exportChatBtn.style.pointerEvents = hasMessages ? "auto" : "none";
     }
 }
 
@@ -785,6 +942,39 @@ function formatMarkdown(text) {
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+
+    // Replace Tables (do this before other replacements)
+    const lines = escaped.split("\n");
+    let inTable = false;
+    let tableRows = [];
+    let processedLines = [];
+
+    for (let line of lines) {
+        const trimmed = line.trim();
+        const isRow = trimmed.startsWith("|") && trimmed.endsWith("|");
+        
+        if (isRow) {
+            if (!inTable) {
+                inTable = true;
+                tableRows = [];
+            }
+            const cells = trimmed
+                .slice(1, -1)
+                .split("|")
+                .map(c => c.trim());
+            tableRows.push(cells);
+        } else {
+            if (inTable) {
+                processedLines.push(renderHtmlTable(tableRows));
+                inTable = false;
+            }
+            processedLines.push(line);
+        }
+    }
+    if (inTable) {
+        processedLines.push(renderHtmlTable(tableRows));
+    }
+    escaped = processedLines.join("\n");
 
     // Replace Markdown Code Blocks: ```lang code ```
     escaped = escaped.replace(/```([a-zA-Z0-9]*)\n([\s\S]*?)```/gim, (match, lang, code) => {
@@ -806,6 +996,13 @@ function formatMarkdown(text) {
     escaped = escaped.replace(/^## (.*$)/gim, "<h2>$1</h2>");
     escaped = escaped.replace(/^# (.*$)/gim, "<h1>$1</h1>");
 
+    // Blockquotes: > text (note: > is escaped to &gt;)
+    escaped = escaped.replace(/^\s*&gt;\s+(.*)$/gim, "<blockquote>$1</blockquote>");
+    escaped = escaped.replace(/<\/blockquote>\s*<blockquote>/gim, "<br>");
+
+    // Horizontal rules: --- or ***
+    escaped = escaped.replace(/^\s*(?:---|\*\*\*)\s*$/gim, "<hr>");
+
     // Unordered lists (bullet points)
     escaped = escaped.replace(/^\s*[-*+]\s+(.*)$/gim, "<ul><li>$1</li></ul>");
     
@@ -815,6 +1012,9 @@ function formatMarkdown(text) {
     // Merge adjacent list elements
     escaped = escaped.replace(/<\/ul>\s*<ul>/gim, "");
     escaped = escaped.replace(/<\/ol>\s*<ol>/gim, "");
+
+    // Links: [text](url)
+    escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
 
     // Line breaks (replace \n with <br>, except inside pre blocks)
     const parts = escaped.split(/(<pre>[\s\S]*?<\/pre>)/g);
@@ -864,4 +1064,84 @@ function addCodeEnhancements(container) {
         
         pre.appendChild(copyBtn);
     });
+}
+
+// --- v1.3.0 NEW HELPER FUNCTIONS ---
+function renderHtmlTable(rows) {
+    if (rows.length === 0) return "";
+    
+    // Check if row 1 is delimiter row (like |---|---| or | :--- |)
+    const hasHeaders = rows.length > 1 && rows[1].every(cell => {
+        return cell.match(/^[:\-\s]+$/) !== null;
+    });
+    
+    let html = "<table>";
+    let startIdx = 0;
+    
+    if (hasHeaders) {
+        html += "<thead><tr>";
+        rows[0].forEach(h => {
+            html += `<th>${h}</th>`;
+        });
+        html += "</tr></thead>";
+        startIdx = 2; // skip headers and separator line
+    }
+    
+    html += "<tbody>";
+    for (let i = startIdx; i < rows.length; i++) {
+        if (i === 1 && rows[i].every(cell => cell.match(/^[:\-\s]+$/) !== null)) {
+            continue;
+        }
+        html += "<tr>";
+        rows[i].forEach(cell => {
+            html += `<td>${cell}</td>`;
+        });
+        html += "</tr>";
+    }
+    html += "</tbody></table>";
+    return html;
+}
+
+function toggleShortcutsModal(show) {
+    if (show) {
+        shortcutsModal.classList.remove("hidden");
+        if (closeShortcutsOkBtn) closeShortcutsOkBtn.focus();
+    } else {
+        shortcutsModal.classList.add("hidden");
+    }
+}
+
+function exportChat() {
+    const session = state.sessions.find(s => s.id === state.activeSessionId);
+    if (!session || session.messages.length === 0) {
+        showNotification("⚠️ Tidak ada pesan untuk diekspor!");
+        return;
+    }
+
+    let markdown = `# ${session.title}\n`;
+    markdown += `*Tanggal Ekspor: ${new Date().toLocaleDateString("id-ID")} ${new Date().toLocaleTimeString("id-ID")}*\n\n---\n\n`;
+
+    session.messages.forEach(msg => {
+        if (msg.role === "user" || msg.role === "model") {
+            if (msg.content.startsWith("Tool result:")) return;
+            if (msg.content.includes("<tool_call>") && msg.content.includes("</tool_call>")) return;
+
+            const roleName = msg.role === "user" ? "User" : "RustAgent 🤖";
+            markdown += `### **${roleName}** _(${msg.timestamp || ''})_\n\n${msg.content}\n\n---\n\n`;
+        }
+    });
+
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    
+    const cleanTitle = session.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    link.href = url;
+    link.setAttribute("download", `chat_${cleanTitle || 'export'}.md`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    showNotification("📥 Chat berhasil diekspor sebagai Markdown!");
 }

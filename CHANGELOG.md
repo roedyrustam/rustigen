@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-06-09
+
+### Added
+- **Quick Action Chips (Prompt Templates)**: Clickable quick prompt chips under the input box for common scenarios (View Files, Search Web, Cargo Build, Math Calculation, draft Threads).
+- **Chat Export (Markdown Download)**: Easily download the active conversation session as a nicely formatted Markdown `.md` file.
+- **Conversation Search (Filter Sidebar)**: Case-insensitive search bar in the sidebar to dynamically filter conversation history based on titles and first messages.
+- **Enhanced Markdown Parser**: Native formatting support inside chat bubbles for tables (with striped rows and header grids), blockquotes (premium glassmorphic layout), horizontal rules, and hyperlinks.
+- **Keyboard Shortcuts Modal**: Keyboard shortcuts layout overlay with styling, accessible via `Ctrl+/` or `?`.
+- **Global Hotkeys**: Navigation hotkeys including `Ctrl+N` (New Chat), `Ctrl+K` (Focus Search), `Ctrl+E` (Export Chat), `Ctrl+,` (Open Settings), and `Esc` (Close Modal).
+- **Custom System Prompt (Personality)**: Editable custom system instruction textarea in settings to customize behavior, tone, or context parameters.
+
+### Changed
+- Settings payload expanded to include custom system instructions merged with default instructions.
+- Version badge in sidebar header updated to `v1.3.0`.
+- Delete chat and Export chat buttons state updated dynamically based on active conversation size.
+
 ## [1.2.0] - 2026-06-09
 
 ### Added

@@ -25,6 +25,7 @@ pub struct ChatRequest {
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub max_context: Option<usize>,
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -690,7 +691,7 @@ pub async fn run_agent_loop_streaming(
         model, key
     );
 
-    let system_instruction = "\
+    let mut system_instruction = "\
 You are an advanced agentic coding and analysis assistant. You have access to the following tools:
 - `calculator(expression)`: Solve mathematical equations. Returns the evaluated float or error. Example request: <tool_call>{\"tool\": \"calculator\", \"expression\": \"(12 + 8) * 5\"}</tool_call>
 - `get_system_info()`: Retrieve OS, Architecture, Current Directory, and Uptime metrics. Example request: <tool_call>{\"tool\": \"get_system_info\"}</tool_call>
@@ -715,7 +716,14 @@ I need to check the current directory contents to see the main source files. Let
 {\"tool\": \"list_directory\"}
 </tool_call>
 
-Once you receive the tool result, analyze it, make further tool calls if needed, and when finished, output your final response outside of any `<thought>` or `<tool_call>` tags. Always explain the results clearly.";
+Once you receive the tool result, analyze it, make further tool calls if needed, and when finished, output your final response outside of any `<thought>` or `<tool_call>` tags. Always explain the results clearly.".to_string();
+
+    if let Some(ref custom_prompt) = req.system_prompt {
+        let trimmed = custom_prompt.trim();
+        if !trimmed.is_empty() {
+            system_instruction = format!("{}\n\n{}", trimmed, system_instruction);
+        }
+    }
 
     let mut conversation = req.messages.clone();
     let mut loop_count = 0;

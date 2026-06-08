@@ -1,20 +1,31 @@
 # Project Blueprint
 
-- **Version**: 1.2.0
+- **Version**: 1.3.0
 - **Last Updated**: 2026-06-09
-- **Description**: High-performance Agentic AI Chatbot with reasoning loops, SSE streaming, and local tool access built in Rust (Axum + Tokio) and Vanilla JS/CSS.
+- **Description**: High-performance Agentic AI Chatbot with reasoning loops, SSE streaming, local tool access, custom personality settings, hotkeys, search, and Markdown export built in Rust (Axum + Tokio) and Vanilla JS/CSS.
 
 ## Architecture & Modules
 
 ### 1. Frontend (Static Web UI)
 - **Files**: `index.html`, `style.css`, `app.js`
 - **Design System**: Sleek glassmorphism theme, dark mode, neon borders, animated gradient background, and smooth transitions.
-- **Features**: SSE streaming with real-time typing effect and blinking cursor, collapsible live thought/reasoning logs, message avatars and timestamps, code language labels, settings modal for API key, model selection, temperature, and context window. Responsive mobile sidebar with hamburger menu. Intercepts backend intent URLs and opens them automatically in new browser tabs.
+- **Features**: 
+  - SSE streaming with real-time typing effect and blinking cursor.
+  - Collapsible live thought/reasoning logs, message avatars, and timestamps.
+  - Code language labels and copy code buttons.
+  - Settings modal for API key, model selection, temperature, context window, and **Custom System Prompt (Personality)**.
+  - **Quick Action Chips**: Prompt templates under input for common scenarios (View Files, Search Web, Build, Math, Threads).
+  - **Chat Export**: Easily export the current chat as a Markdown `.md` file download.
+  - **Conversation Search**: Filter chat history in the sidebar dynamically.
+  - **Enhanced Markdown**: Support for tables, blockquotes, horizontal rules, and hyperlinks inside chat bubbles.
+  - **Keyboard Shortcuts**: Built-in hotkeys modal (Ctrl+N, Ctrl+K, Ctrl+E, Ctrl+/, Ctrl+, Esc) and support for `?` key.
+  - Responsive mobile sidebar with hamburger menu.
 
 ### 2. Backend (Rust Server)
 - **Router**: Axum HTTP routes under `/api/chat` serving SSE (Server-Sent Events) stream.
 - **Agent Loop (`src/agent.rs`)**:
   - Handles the reasoning loop with Gemini's system instructions.
+  - Dynamic Custom System Prompt: Merges custom user personality settings with the default system instructions.
   - Parsers for `<thought>` and `<tool_call>` tags.
   - Streams events via `tokio::sync::mpsc` channel: `step`, `chunk`, `open_url`, `done`, `error`.
   - Context window trimming to manage conversation length.
