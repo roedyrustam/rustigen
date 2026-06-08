@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.3] - 2026-06-09
+
+### Added
+- **YouTube Auto-Search & Discovery**: The YouTube Niche Analyzer now accepts general topic search queries (e.g. "Rust programming") instead of just handle strings, searching YouTube to auto-discover matching channels.
+- **Search Metadata Banner**: Added a info banner at the start of reports showing the search keyword and the discovered target channel.
+- **Demo Mode Search simulation**: Upgraded Demo Mode to parse topic/keyword search inputs and simulate discovery flow.
+
 ## [1.3.2] - 2026-06-09
 
 ### Added

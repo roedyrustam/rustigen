@@ -729,8 +729,21 @@ fn parse_channel_details(body: &str, input_id: Option<&str>) -> ChannelDetails {
     }
 }
 
-
-
+fn extract_first_search_handle(body: &str) -> Option<String> {
+    if let Some(pos) = body.find("\"canonicalBaseUrl\":\"/@") {
+        let start = pos + 20; // index of '/' before '@'
+        let sub = &body[start..];
+        if let Some(end_quote) = sub.find('"') {
+            let handle = sub[..end_quote].to_string();
+            if handle.starts_with("/@") {
+                return Some(handle[1..].to_string());
+            } else {
+                return Some(handle);
+            }
+        }
+    }
+    None
+}
 #[derive(Debug)]
 struct YoutubeVideo {
     title: String,
@@ -798,9 +811,40 @@ fn extract_attribute_value(xml: &str, element_start: &str, attr_name: &str) -> O
 async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> String {
     let input_trimmed = channel_input.trim();
     let is_id_only = input_trimmed.starts_with("UC") && input_trimmed.len() == 24;
-    
+    let is_url = input_trimmed.starts_with("http://") || input_trimmed.starts_with("https://");
+    let is_handle = input_trimmed.starts_with("@");
+
+    let mut search_info_msg = String::new();
     let mut target_url = input_trimmed.to_string();
-    if !target_url.starts_with("http") {
+
+    if !is_id_only && !is_url && !is_handle {
+        // Treat as a search query keyword!
+        let encoded_query = url_encode(input_trimmed);
+        let search_url = format!("https://www.youtube.com/results?search_query={}&sp=EgIQAg%253D%253D", encoded_query);
+
+        let search_req = client.get(&search_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .send()
+            .await;
+
+        let search_res = match search_req {
+            Ok(res) => res,
+            Err(e) => return format!("Error: Gagal mencari channel YouTube: {}", e),
+        };
+
+        let search_body = match search_res.text().await {
+            Ok(text) => text,
+            Err(e) => return format!("Error: Gagal membaca hasil pencarian YouTube: {}", e),
+        };
+
+        if let Some(handle) = extract_first_search_handle(&search_body) {
+            let formatted_handle = if handle.starts_with("@") { handle.clone() } else { format!("@{}", handle) };
+            search_info_msg = format!("*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **{}***\n\n", input_trimmed, formatted_handle);
+            target_url = format!("https://www.youtube.com/{}", formatted_handle);
+        } else {
+            return format!("Error: Tidak dapat menemukan channel YouTube yang cocok untuk kata kunci \"{}\".", input_trimmed);
+        }
+    } else if !target_url.starts_with("http") {
         if is_id_only {
             target_url = format!("https://www.youtube.com/channel/{}", input_trimmed);
         } else if target_url.starts_with("@") {
@@ -886,7 +930,7 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
 
     let mut report = format!(
         "## 📊 Laporan Analisis Channel YouTube\n\n\
-         {} \
+         {}{} \
          ### **{}**\n\n\
          * **Channel ID**: `{}`\n\
          * **Jumlah Subscriber**: `{}`\n\
@@ -898,7 +942,7 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
          * **Rata-rata Penonton**: **{}** views\n\
          * **Median Penonton**: **{}** views\n\n\
          ### 📈 Video Outlier (Performa Tinggi / Potensi Niche)\n\n",
-        avatar_markdown, details.title, details.id, details.subscribers, details.videos, details.description, count, avg_views, median_views
+        avatar_markdown, search_info_msg, details.title, details.id, details.subscribers, details.videos, details.description, count, avg_views, median_views
     );
 
     if outliers.is_empty() {
@@ -1326,17 +1370,24 @@ async fn run_demo_mode_streaming(
             }
         }).await;
 
-        let channel_input = if last_user_msg.contains("channel ") {
-            let user_content = messages.iter().filter(|m| m.role == "user").last().unwrap().content.clone();
+        let user_content = messages.iter().filter(|m| m.role == "user").last().unwrap().content.clone();
+        let (channel_input, search_info_msg) = if last_user_msg.contains("channel ") {
             let idx = user_content.to_lowercase().find("channel ").unwrap();
             let sub = user_content[idx + 8..].trim();
-            if sub.starts_with('@') || sub.contains("youtube.com") {
-                sub.split_whitespace().next().unwrap_or("@GoogleDevelopers").to_string()
-            } else {
-                "@GoogleDevelopers".to_string()
-            }
+            let handle = sub.split_whitespace().next().unwrap_or("@GoogleDevelopers").to_string();
+            (handle, "".to_string())
+        } else if last_user_msg.contains("topik ") {
+            let idx = user_content.to_lowercase().find("topik ").unwrap();
+            let sub = user_content[idx + 6..].trim();
+            let keyword = sub.split('"').filter(|s| !s.trim().is_empty()).next().unwrap_or("belajar rust").trim().to_string();
+            ("@GoogleDevelopers".to_string(), format!("*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **@GoogleDevelopers***\n\n", keyword))
+        } else if last_user_msg.contains("keyword ") {
+            let idx = user_content.to_lowercase().find("keyword ").unwrap();
+            let sub = user_content[idx + 8..].trim();
+            let keyword = sub.split('"').filter(|s| !s.trim().is_empty()).next().unwrap_or("belajar rust").trim().to_string();
+            ("@GoogleDevelopers".to_string(), format!("*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **@GoogleDevelopers***\n\n", keyword))
         } else {
-            "@GoogleDevelopers".to_string()
+            ("@GoogleDevelopers".to_string(), "".to_string())
         };
 
         let _ = tx.send(SseEvent::Step {
@@ -1357,6 +1408,7 @@ async fn run_demo_mode_streaming(
 
         response = format!(
             "## 📊 Laporan Analisis Channel YouTube\n\n\
+             {}{}\
              ![avatar](https://yt3.googleusercontent.com/WZ_63J_-745xyW_DGxGi3VUyTZAe0Jvhw2ZCg7fdz-tv9esTbNPZTFR9X79QzA0ArIrMjYJCDA=s900-c-k-c0x00ffffff-no-rj)\n\n\
              ### **Google for Developers**\n\n\
              * **Channel ID**: `UC_x5XG1OV2P6uZZ5FSM9Ttw`\n\
@@ -1383,7 +1435,7 @@ async fn run_demo_mode_streaming(
              * **Outlier**: *\"When did you know you wanted to be a dev?\"*\n\
                * 💡 *Ide Micro Niche*: `Developer Journey Stories`, `Self-taught Developer Path`, `How to become a Dev`\n\n\
              *Catatan: Ini adalah simulasi Mode Demo untuk channel `{}`. Masukkan Gemini API Key Anda di Pengaturan untuk melakukan pencarian dan analisis riil secara otonom pada channel manapun!*",
-            channel_input
+            search_info_msg, "", channel_input
         );
     } else if last_user_msg.contains("sistem") || last_user_msg.contains("system") || last_user_msg.contains("info") {
         let _ = tx.send(SseEvent::Step {

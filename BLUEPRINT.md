@@ -1,8 +1,8 @@
 # Project Blueprint
 
-- **Version**: 1.3.2
+- **Version**: 1.3.3
 - **Last Updated**: 2026-06-09
-- **Description**: High-performance Agentic AI Chatbot with reasoning loops, SSE streaming, local tool access, custom personality settings, hotkeys, search, Markdown export, Markdown image rendering, and premium YouTube niche analysis (with avatar, description, and sub count) built in Rust (Axum + Tokio) and Vanilla JS/CSS.
+- **Description**: High-performance Agentic AI Chatbot with reasoning loops, SSE streaming, local tool access, custom personality settings, hotkeys, search, Markdown export, Markdown image rendering, and premium YouTube niche analysis (with auto-search channel discovery, avatar, description, and sub count) built in Rust (Axum + Tokio) and Vanilla JS/CSS.
 
 ## Architecture & Modules
 
@@ -40,4 +40,4 @@
   - `fetch_url`: Fetch web text content.
   - `execute_command`: Run whitelisted shell commands with 30s timeout (cargo, git, node, npm, python, etc.).
   - `post_to_threads`: Formats high-engagement Threads content and returns a Web Intent URL (`https://threads.net/intent/post?text=...`) to open it on the browser.
-  - `analyze_youtube_channel`: Scrapes channel HTML profile page (resolving ID, avatar, subscribers, videos, description), parses RSS XML feed views/dates/titles, detects outlier high-performing topics, and suggests micro niches.
+  - `analyze_youtube_channel`: Searches YouTube for keywords to auto-discover matching channels, scrapes channel HTML profile page (resolving ID, avatar, subscribers, videos, description), parses RSS XML feed views/dates/titles, detects outlier high-performing topics, and suggests micro niches.
