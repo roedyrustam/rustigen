@@ -1384,6 +1384,7 @@ kbd {
     height: 1px;
     background: linear-gradient(90deg, transparent, var(--border-glow), transparent);
     margin: 1.5rem 0;
+    clear: both;
 }
 .message-bubble a {
     color: #a78bfa;
@@ -1396,4 +1397,23 @@ kbd {
     color: #c4b5fd;
     text-shadow: 0 0 8px rgba(196, 181, 253, 0.5);
     border-bottom-style: solid;
+}
+
+/* Markdown Image & Profile Avatar Styles */
+.message-bubble img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 8px;
+    margin: 0.5rem 0;
+}
+.message-bubble img[alt="avatar"] {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    border: 2px solid var(--primary);
+    box-shadow: 0 0 12px rgba(139, 92, 246, 0.45);
+    float: left;
+    margin-right: 1.25rem;
+    margin-bottom: 0.75rem;
+    object-fit: cover;
 }

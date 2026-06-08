@@ -1013,6 +1013,9 @@ function formatMarkdown(text) {
     escaped = escaped.replace(/<\/ul>\s*<ul>/gim, "");
     escaped = escaped.replace(/<\/ol>\s*<ol>/gim, "");
 
+    // Images: ![alt](url)
+    escaped = escaped.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="markdown-image">');
+
     // Links: [text](url)
     escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
 

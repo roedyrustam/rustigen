@@ -561,75 +561,175 @@ fn url_encode(s: &str) -> String {
 }
 
 // --- YOUTUBE CHANNEL ANALYZER HELPERS ---
-async fn resolve_youtube_channel_id(client: &reqwest::Client, input: &str) -> Result<String, String> {
-    let input_trimmed = input.trim();
-    if input_trimmed.starts_with("UC") && input_trimmed.len() == 24 {
-        return Ok(input_trimmed.to_string());
-    }
+#[derive(Debug)]
+struct ChannelDetails {
+    id: String,
+    title: String,
+    subscribers: String,
+    videos: String,
+    description: String,
+    avatar_url: String,
+}
 
-    let mut target_url = input_trimmed.to_string();
-    if !target_url.starts_with("http") {
-        if target_url.starts_with("@") {
-            target_url = format!("https://www.youtube.com/{}", target_url);
-        } else {
-            target_url = format!("https://www.youtube.com/@{}", target_url);
-        }
-    }
-
-    if target_url.contains("/channel/") {
-        if let Some(pos) = target_url.find("/channel/") {
-            let id = &target_url[pos + 9..];
-            if id.len() >= 24 {
-                return Ok(id[..24].to_string());
+fn parse_channel_details(body: &str, input_id: Option<&str>) -> ChannelDetails {
+    // 1. Extract Channel ID
+    let mut channel_id = input_id.unwrap_or("").to_string();
+    if channel_id.is_empty() {
+        if let Some(pos) = body.find("itemprop=\"channelId\" content=\"UC") {
+            let start = pos + 30;
+            if body.len() >= start + 24 {
+                channel_id = body[start..start+24].to_string();
             }
         }
-    }
-
-    let req = client.get(&target_url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .send()
-        .await;
-        
-    let response = match req {
-        Ok(res) => res,
-        Err(e) => return Err(format!("Gagal menghubungi YouTube: {}", e)),
-    };
-
-    let body = match response.text().await {
-        Ok(text) => text,
-        Err(e) => return Err(format!("Gagal membaca response YouTube: {}", e)),
-    };
-
-    if let Some(pos) = body.find("href=\"https://www.youtube.com/channel/UC") {
-        let start = pos + 38;
-        if body.len() >= start + 24 {
-            let channel_id = &body[start..start+24];
-            return Ok(channel_id.to_string());
-        }
-    }
-
-    let chars: Vec<char> = body.chars().collect();
-    let mut i = 0;
-    while i < chars.len().saturating_sub(24) {
-        if chars[i] == 'U' && chars[i+1] == 'C' {
-            let mut is_valid = true;
-            for j in 2..24 {
-                let c = chars[i+j];
-                if !c.is_alphanumeric() && c != '_' && c != '-' {
-                    is_valid = false;
-                    break;
+        if channel_id.is_empty() {
+            if let Some(pos) = body.find("channel_id=UC") {
+                let start = pos + 11;
+                if body.len() >= start + 24 {
+                    channel_id = body[start..start+24].to_string();
                 }
             }
-            if is_valid {
-                let channel_id: String = chars[i..i+24].iter().collect();
-                return Ok(channel_id);
+        }
+        if channel_id.is_empty() {
+            if let Some(pos) = body.find("\"channelId\":\"UC") {
+                let start = pos + 13;
+                if body.len() >= start + 24 {
+                    channel_id = body[start..start+24].to_string();
+                }
             }
         }
-        i += 1;
+        if channel_id.is_empty() {
+            if let Some(pos) = body.find("\"externalChannelId\":\"UC") {
+                let start = pos + 21;
+                if body.len() >= start + 24 {
+                    channel_id = body[start..start+24].to_string();
+                }
+            }
+        }
+        if channel_id.is_empty() {
+            if let Some(pos) = body.find("href=\"https://www.youtube.com/channel/UC") {
+                let start = pos + 38;
+                if body.len() >= start + 24 {
+                    channel_id = body[start..start+24].to_string();
+                }
+            }
+        }
+        if channel_id.is_empty() {
+            let chars: Vec<char> = body.chars().collect();
+            let mut i = 0;
+            while i < chars.len().saturating_sub(24) {
+                if chars[i] == 'U' && chars[i+1] == 'C' {
+                    let mut is_valid = true;
+                    for j in 2..24 {
+                        let c = chars[i+j];
+                        if !c.is_alphanumeric() && c != '_' && c != '-' {
+                            is_valid = false;
+                            break;
+                        }
+                    }
+                    if is_valid {
+                        channel_id = chars[i..i+24].iter().collect();
+                        break;
+                    }
+                }
+                i += 1;
+            }
+        }
     }
 
-    Err("Tidak dapat menemukan YouTube Channel ID dari halaman channel.".to_string())
+    // 2. Extract Title
+    let mut title = "YouTube Channel".to_string();
+    if let Some(pos) = body.find("<meta name=\"title\" content=\"") {
+        let start = pos + 28;
+        let sub = &body[start..];
+        if let Some(end_quote) = sub.find('"') {
+            title = sub[..end_quote].trim().to_string();
+        }
+    } else if let Some(pos) = body.find("<title>") {
+        let start = pos + 7;
+        let sub = &body[start..];
+        if let Some(end_tag) = sub.find("</title>") {
+            let t = sub[..end_tag].trim().to_string();
+            title = t.replace(" - YouTube", "").trim().to_string();
+        }
+    }
+
+    // 3. Extract Subscribers
+    let mut subscribers = "Tidak diketahui".to_string();
+    let mut search_pos = 0;
+    while let Some(pos) = body[search_pos..].find("\"accessibilityLabel\":\"") {
+        let idx = search_pos + pos;
+        let start = idx + 22;
+        let sub = &body[start..];
+        if let Some(end_quote) = sub.find('"') {
+            let label = &sub[..end_quote];
+            if label.contains("subscriber") && label.len() < 35 {
+                subscribers = label.replace("\\u00a0", " ").trim().to_string();
+                break;
+            }
+            search_pos = start + end_quote;
+        } else {
+            break;
+        }
+    }
+
+    // 4. Extract Video Count
+    let mut videos = "Tidak diketahui".to_string();
+    let mut search_pos = 0;
+    while let Some(pos) = body[search_pos..].find("\"content\":\"") {
+        let idx = search_pos + pos;
+        let start = idx + 11;
+        let sub = &body[start..];
+        if let Some(end_quote) = sub.find('"') {
+            let label = &sub[..end_quote];
+            if label.contains("video") && label.len() < 25 {
+                videos = label.replace("\\u00a0", " ").trim().to_string();
+                break;
+            }
+            search_pos = start + end_quote;
+        } else {
+            break;
+        }
+    }
+
+    // 5. Extract Description
+    let mut description = "Tidak ada deskripsi".to_string();
+    if let Some(pos) = body.find("<meta name=\"description\" content=\"") {
+        let start = pos + 34;
+        let sub = &body[start..];
+        if let Some(end_quote) = sub.find('"') {
+            let desc = &sub[..end_quote];
+            description = desc
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+                .trim()
+                .to_string();
+        }
+    }
+
+    // 6. Extract Avatar URL
+    let mut avatar_url = "".to_string();
+    if let Some(pos) = body.find("<meta property=\"og:image\" content=\"") {
+        let start = pos + 35;
+        let sub = &body[start..];
+        if let Some(end_quote) = sub.find('"') {
+            avatar_url = sub[..end_quote].trim().to_string();
+        }
+    }
+
+    ChannelDetails {
+        id: channel_id,
+        title,
+        subscribers,
+        videos,
+        description,
+        avatar_url,
+    }
 }
+
+
 
 #[derive(Debug)]
 struct YoutubeVideo {
@@ -696,34 +796,62 @@ fn extract_attribute_value(xml: &str, element_start: &str, attr_name: &str) -> O
 }
 
 async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> String {
-    let channel_id = match resolve_youtube_channel_id(client, channel_input).await {
-        Ok(id) => id,
-        Err(e) => return format!("Error: {}", e),
+    let input_trimmed = channel_input.trim();
+    let is_id_only = input_trimmed.starts_with("UC") && input_trimmed.len() == 24;
+    
+    let mut target_url = input_trimmed.to_string();
+    if !target_url.starts_with("http") {
+        if is_id_only {
+            target_url = format!("https://www.youtube.com/channel/{}", input_trimmed);
+        } else if target_url.starts_with("@") {
+            target_url = format!("https://www.youtube.com/{}", target_url);
+        } else {
+            target_url = format!("https://www.youtube.com/@{}", target_url);
+        }
+    }
+
+    let req = client.get(&target_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .send()
+        .await;
+        
+    let response = match req {
+        Ok(res) => res,
+        Err(e) => return format!("Error: Gagal menghubungi YouTube: {}", e),
     };
 
-    let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={}", channel_id);
-    let req = client.get(&url)
+    let body = match response.text().await {
+        Ok(text) => text,
+        Err(e) => return format!("Error: Gagal membaca halaman YouTube: {}", e),
+    };
+
+    let details = parse_channel_details(&body, if is_id_only { Some(input_trimmed) } else { None });
+    if details.id.is_empty() {
+        return "Error: Tidak dapat menemukan YouTube Channel ID dari halaman channel.".to_string();
+    }
+
+    let rss_url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={}", details.id);
+    let rss_req = client.get(&rss_url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .send()
         .await;
 
-    let response = match req {
+    let rss_response = match rss_req {
         Ok(res) => res,
         Err(e) => return format!("Error: Gagal mengambil RSS feed: {}", e),
     };
 
-    let xml = match response.text().await {
+    let xml = match rss_response.text().await {
         Ok(text) => text,
         Err(e) => return format!("Error: Gagal membaca RSS feed: {}", e),
     };
 
-    let channel_title = extract_tag_content(&xml, "<title>", "</title>").unwrap_or_else(|| "YouTube Channel".to_string());
     let videos = parse_youtube_rss(&xml);
     
     if videos.is_empty() {
         return format!(
             "### Analisis Channel YouTube: {}\n\nTidak ada video yang ditemukan pada feed RSS channel ini. Pastikan channel tersebut aktif.", 
-            channel_title
+            details.title
         );
     }
 
@@ -750,14 +878,27 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
         }
     }
 
+    let avatar_markdown = if !details.avatar_url.is_empty() {
+        format!("![avatar]({})\n\n", details.avatar_url)
+    } else {
+        "".to_string()
+    };
+
     let mut report = format!(
-        "## 📊 Laporan Analisis Channel YouTube: **{}**\n\n\
+        "## 📊 Laporan Analisis Channel YouTube\n\n\
+         {} \
+         ### **{}**\n\n\
          * **Channel ID**: `{}`\n\
-         * **Jumlah Video di Feed**: {} video terakhir\n\
-         * **Rata-rata Penonton**: {} views\n\
-         * **Median Penonton**: {} views\n\n\
-         ### 📈 Video Outlier (Performa Tinggi / Potensi Niche)\n",
-        channel_title, channel_id, count, avg_views, median_views
+         * **Jumlah Subscriber**: `{}`\n\
+         * **Total Video**: `{}`\n\
+         * **Deskripsi**: {}\n\n\
+         ---\n\n\
+         ### 📈 Statistik Performa Video Terkini\n\n\
+         * **Analisis Data**: {} video terbaru dari feed RSS\n\
+         * **Rata-rata Penonton**: **{}** views\n\
+         * **Median Penonton**: **{}** views\n\n\
+         ### 📈 Video Outlier (Performa Tinggi / Potensi Niche)\n\n",
+        avatar_markdown, details.title, details.id, details.subscribers, details.videos, details.description, count, avg_views, median_views
     );
 
     if outliers.is_empty() {
@@ -1215,11 +1356,18 @@ async fn run_demo_mode_streaming(
         }).await;
 
         response = format!(
-            "## 📊 Laporan Analisis Channel YouTube: **Google for Developers** (Mode Demo)\n\n\
+            "## 📊 Laporan Analisis Channel YouTube\n\n\
+             ![avatar](https://yt3.googleusercontent.com/WZ_63J_-745xyW_DGxGi3VUyTZAe0Jvhw2ZCg7fdz-tv9esTbNPZTFR9X79QzA0ArIrMjYJCDA=s900-c-k-c0x00ffffff-no-rj)\n\n\
+             ### **Google for Developers**\n\n\
              * **Channel ID**: `UC_x5XG1OV2P6uZZ5FSM9Ttw`\n\
-             * **Jumlah Video di Feed**: 15 video terakhir\n\
-             * **Rata-rata Penonton**: 6,854 views\n\
-             * **Median Penonton**: 2,310 views\n\n\
+             * **Jumlah Subscriber**: `2,65 juta subscriber`\n\
+             * **Total Video**: `6 rb video`\n\
+             * **Deskripsi**: Subscribe to join a community of creative developers and learn the latest in Google technology.\n\n\
+             ---\n\n\
+             ### 📈 Statistik Performa Video Terkini\n\n\
+             * **Analisis Data**: 15 video terbaru dari feed RSS\n\
+             * **Rata-rata Penonton**: **6,854** views\n\
+             * **Median Penonton**: **2,310** views\n\n\
              ### 📈 Video Outlier (Performa Tinggi / Potensi Niche)\n\n\
              | Video | Penonton (Views) | Performa vs Median | Rilis |\n\
              |---|---|---|---|\n\

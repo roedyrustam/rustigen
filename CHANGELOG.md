@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2] - 2026-06-09
+
+### Added
+- **Premium YouTube Profile Metadata**: Scrapes channel profile avatar image, subscriber count, total video count, and channel description to present a comprehensive, rich analytics card.
+- **Markdown Image Rendering**: Added native parser support for standard Markdown images `![alt](url)` in the chat UI.
+- **Neon Avatar Styling**: Styled channel logos with custom neon glow borders, floating text wrapping, and clean horizontal rule layouts.
+- **Demo Mode simulation upgrade**: Upgraded YouTube analyzer simulation responses to include full metadata profile headers.
+
 ## [1.3.1] - 2026-06-09
 
 ### Added
