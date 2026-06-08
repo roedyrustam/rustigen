@@ -560,6 +560,259 @@ fn url_encode(s: &str) -> String {
     res
 }
 
+// --- YOUTUBE CHANNEL ANALYZER HELPERS ---
+async fn resolve_youtube_channel_id(client: &reqwest::Client, input: &str) -> Result<String, String> {
+    let input_trimmed = input.trim();
+    if input_trimmed.starts_with("UC") && input_trimmed.len() == 24 {
+        return Ok(input_trimmed.to_string());
+    }
+
+    let mut target_url = input_trimmed.to_string();
+    if !target_url.starts_with("http") {
+        if target_url.starts_with("@") {
+            target_url = format!("https://www.youtube.com/{}", target_url);
+        } else {
+            target_url = format!("https://www.youtube.com/@{}", target_url);
+        }
+    }
+
+    if target_url.contains("/channel/") {
+        if let Some(pos) = target_url.find("/channel/") {
+            let id = &target_url[pos + 9..];
+            if id.len() >= 24 {
+                return Ok(id[..24].to_string());
+            }
+        }
+    }
+
+    let req = client.get(&target_url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .send()
+        .await;
+        
+    let response = match req {
+        Ok(res) => res,
+        Err(e) => return Err(format!("Gagal menghubungi YouTube: {}", e)),
+    };
+
+    let body = match response.text().await {
+        Ok(text) => text,
+        Err(e) => return Err(format!("Gagal membaca response YouTube: {}", e)),
+    };
+
+    if let Some(pos) = body.find("href=\"https://www.youtube.com/channel/UC") {
+        let start = pos + 38;
+        if body.len() >= start + 24 {
+            let channel_id = &body[start..start+24];
+            return Ok(channel_id.to_string());
+        }
+    }
+
+    let chars: Vec<char> = body.chars().collect();
+    let mut i = 0;
+    while i < chars.len().saturating_sub(24) {
+        if chars[i] == 'U' && chars[i+1] == 'C' {
+            let mut is_valid = true;
+            for j in 2..24 {
+                let c = chars[i+j];
+                if !c.is_alphanumeric() && c != '_' && c != '-' {
+                    is_valid = false;
+                    break;
+                }
+            }
+            if is_valid {
+                let channel_id: String = chars[i..i+24].iter().collect();
+                return Ok(channel_id);
+            }
+        }
+        i += 1;
+    }
+
+    Err("Tidak dapat menemukan YouTube Channel ID dari halaman channel.".to_string())
+}
+
+#[derive(Debug)]
+struct YoutubeVideo {
+    title: String,
+    video_id: String,
+    published: String,
+    views: u64,
+}
+
+fn parse_youtube_rss(xml: &str) -> Vec<YoutubeVideo> {
+    let mut videos = Vec::new();
+    let parts: Vec<&str> = xml.split("<entry>").collect();
+    for part in parts.iter().skip(1) {
+        let title = extract_tag_content(part, "<title>", "</title>").unwrap_or_default();
+        let video_id = extract_tag_content(part, "<yt:videoId>", "</yt:videoId>").unwrap_or_default();
+        let published = extract_tag_content(part, "<published>", "</published>").unwrap_or_default();
+        let views = extract_attribute_value(part, "<media:statistics", "views").unwrap_or(0);
+        
+        if !video_id.is_empty() {
+            videos.push(YoutubeVideo {
+                title,
+                video_id,
+                published,
+                views,
+            });
+        }
+    }
+    videos
+}
+
+fn extract_tag_content(xml: &str, start_tag: &str, end_tag: &str) -> Option<String> {
+    if let Some(start_idx) = xml.find(start_tag) {
+        let content_start = start_idx + start_tag.len();
+        if let Some(end_idx) = xml[content_start..].find(end_tag) {
+            let content = &xml[content_start..content_start + end_idx];
+            let decoded = content
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'");
+            return Some(decoded.trim().to_string());
+        }
+    }
+    None
+}
+
+fn extract_attribute_value(xml: &str, element_start: &str, attr_name: &str) -> Option<u64> {
+    if let Some(el_idx) = xml.find(element_start) {
+        let sub = &xml[el_idx..];
+        let end_bracket = sub.find('>').unwrap_or(sub.len());
+        let element_content = &sub[..end_bracket];
+        
+        let attr_pattern = format!("{}=\"", attr_name);
+        if let Some(attr_idx) = element_content.find(&attr_pattern) {
+            let val_start = attr_idx + attr_pattern.len();
+            if let Some(val_end) = element_content[val_start..].find('"') {
+                let val_str = &element_content[val_start..val_start + val_end];
+                return val_str.parse::<u64>().ok();
+            }
+        }
+    }
+    None
+}
+
+async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> String {
+    let channel_id = match resolve_youtube_channel_id(client, channel_input).await {
+        Ok(id) => id,
+        Err(e) => return format!("Error: {}", e),
+    };
+
+    let url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={}", channel_id);
+    let req = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .send()
+        .await;
+
+    let response = match req {
+        Ok(res) => res,
+        Err(e) => return format!("Error: Gagal mengambil RSS feed: {}", e),
+    };
+
+    let xml = match response.text().await {
+        Ok(text) => text,
+        Err(e) => return format!("Error: Gagal membaca RSS feed: {}", e),
+    };
+
+    let channel_title = extract_tag_content(&xml, "<title>", "</title>").unwrap_or_else(|| "YouTube Channel".to_string());
+    let videos = parse_youtube_rss(&xml);
+    
+    if videos.is_empty() {
+        return format!(
+            "### Analisis Channel YouTube: {}\n\nTidak ada video yang ditemukan pada feed RSS channel ini. Pastikan channel tersebut aktif.", 
+            channel_title
+        );
+    }
+
+    let mut views_list: Vec<u64> = videos.iter().map(|v| v.views).collect();
+    views_list.sort_unstable();
+    
+    let total_views: u64 = views_list.iter().sum();
+    let count = views_list.len() as u64;
+    let avg_views = total_views / count;
+    
+    let median_views = if count % 2 == 0 {
+        let mid = (count / 2) as usize;
+        (views_list[mid - 1] + views_list[mid]) / 2
+    } else {
+        views_list[(count / 2) as usize]
+    };
+
+    let threshold = (median_views as f64 * 1.5).max(avg_views as f64 * 1.2) as u64;
+    
+    let mut outliers = Vec::new();
+    for v in &videos {
+        if v.views >= threshold && v.views > 100 {
+            outliers.push(v);
+        }
+    }
+
+    let mut report = format!(
+        "## 📊 Laporan Analisis Channel YouTube: **{}**\n\n\
+         * **Channel ID**: `{}`\n\
+         * **Jumlah Video di Feed**: {} video terakhir\n\
+         * **Rata-rata Penonton**: {} views\n\
+         * **Median Penonton**: {} views\n\n\
+         ### 📈 Video Outlier (Performa Tinggi / Potensi Niche)\n",
+        channel_title, channel_id, count, avg_views, median_views
+    );
+
+    if outliers.is_empty() {
+        report.push_str("Tidak ditemukan video outlier yang signifikan di video terakhir. Performa video relatif merata.\n");
+    } else {
+        report.push_str("Video berikut memiliki performa di atas rata-rata channel, menunjukkan ketertarikan tinggi pada topik tersebut:\n\n");
+        report.push_str("| Video | Penonton (Views) | Performa vs Median | Rilis |\n");
+        report.push_str("|---|---|---|---|\n");
+        for v in &outliers {
+            let multiplier = v.views as f64 / median_views.max(1) as f64;
+            let date_str = if v.published.len() >= 10 { &v.published[..10] } else { &v.published };
+            report.push_str(&format!(
+                "| [{}]({}watch?v={}) | **{}** | **{:.1}x** | `{}` |\n",
+                v.title, "https://www.youtube.com/", v.video_id, v.views, multiplier, date_str
+            ));
+        }
+    }
+
+    report.push_str("\n### 🔍 Rekomendasi Micro Niche & Topik Kompetitif\n\n");
+    if outliers.is_empty() {
+        report.push_str("Gunakan video dengan performa terbaik di channel ini sebagai referensi topik dasar, lalu cari topik turunan yang lebih spesifik menggunakan kata kunci pencarian web.\n");
+    } else {
+        report.push_str("Berdasarkan judul video outlier di atas, berikut adalah kata kunci micro niche potensial yang dapat Anda masuki:\n\n");
+        for v in &outliers {
+            let clean_title = v.title.replace(|c: char| !c.is_alphanumeric() && c != ' ', "");
+            let words: Vec<&str> = clean_title.split_whitespace().collect();
+            
+            let mut niche_ideas = Vec::new();
+            if words.len() >= 3 {
+                niche_ideas.push(words[..3].join(" "));
+            }
+            if words.len() >= 4 {
+                niche_ideas.push(words[1..4].join(" "));
+            }
+            if words.len() >= 5 {
+                niche_ideas.push(words[2..5].join(" "));
+            }
+            
+            let ideas_formatted = niche_ideas.iter()
+                .map(|s| format!("`{}`", s))
+                .collect::<Vec<String>>()
+                .join(", ");
+                
+            report.push_str(&format!(
+                "* **Outlier**: *\"{}\"*\n  * 💡 *Ide Micro Niche*: {}\n",
+                v.title, ideas_formatted
+            ));
+        }
+    }
+
+    report.push_str("\n*Catatan: Analisis ini didasarkan pada performa relatif video terakhir di feed RSS YouTube channel. Outlier performa tinggi biasanya menandakan topik dengan demand tinggi di segmen penonton tersebut.*");
+    
+    report
+}
+
 pub struct ToolResult {
     pub output: String,
     pub open_url: Option<String>,
@@ -662,6 +915,14 @@ async fn execute_tool(
                 ToolResult::new("Error: Missing 'text' argument for post_to_threads".to_string())
             }
         }
+        "analyze_youtube_channel" => {
+            let res = if let Some(input) = call.query.as_deref().or(call.url.as_deref()) {
+                run_youtube_analysis(client, input).await
+            } else {
+                "Error: Missing 'query' (YouTube channel URL/handle) argument for analyze_youtube_channel".to_string()
+            };
+            ToolResult::new(res)
+        }
         _ => ToolResult::new(format!("Error: Unknown tool '{}'", tool_name)),
     }
 }
@@ -703,6 +964,7 @@ You are an advanced agentic coding and analysis assistant. You have access to th
 - `fetch_url(url)`: Fetch and extract plain text content from a web page URL. Example request: <tool_call>{\"tool\": \"fetch_url\", \"url\": \"https://example.com\"}</tool_call>
 - `execute_command(command, args)`: Execute a whitelisted shell command in the workspace. Returns stdout, stderr, and exit code. The command has a 30-second timeout. Allowed commands include: cargo, rustc, git, node, npm, python, dir, ls, echo, etc. Example request: <tool_call>{\"tool\": \"execute_command\", \"command\": \"cargo\", \"args\": [\"build\"]}</tool_call>
 - `post_to_threads(text)`: Auto-publish a post to Threads. Generates high-engagement Threads content matching the timeline algorithm (strong hook, short paragraphs, spacing, ending question to drive replies, under 500 characters, no external links). Example request: <tool_call>{\"tool\": \"post_to_threads\", \"text\": \"Did you know that Rust Axum compiles down to a single binary under 10MB? 🦀\\n\\nHere is why it is the future of web dev...\\n\\nWhat is your favorite Rust framework?\"}</tool_call>
+- `analyze_youtube_channel(query)`: Analyze a YouTube channel handle or URL (e.g. `@GoogleDevelopers` or `https://www.youtube.com/@GoogleDevelopers`) to retrieve the latest videos, view counts, detect outlier videos (high performance / high interest topics), and identify candidate micro niches to compete. Example request: <tool_call>{\"tool\": \"analyze_youtube_channel\", \"query\": \"@GoogleDevelopers\"}</tool_call>
 
 To use a tool, you must respond with a JSON object enclosed in `<tool_call>` and `</tool_call>` tags.
 Before making a tool call, or if you do not need a tool call, write out your detailed thinking process enclosed in `<thought>` and `</thought>` tags. Always output the tool_call tags on a separate line.
@@ -914,7 +1176,68 @@ async fn run_demo_mode_streaming(
 
     let response: String;
 
-    if last_user_msg.contains("sistem") || last_user_msg.contains("system") || last_user_msg.contains("info") {
+    if last_user_msg.contains("youtube") || last_user_msg.contains("niche") || last_user_msg.contains("analisis channel") {
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "User wants to analyze a YouTube channel to find micro niches. I will call `analyze_youtube_channel` with the query.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
+
+        let channel_input = if last_user_msg.contains("channel ") {
+            let user_content = messages.iter().filter(|m| m.role == "user").last().unwrap().content.clone();
+            let idx = user_content.to_lowercase().find("channel ").unwrap();
+            let sub = user_content[idx + 8..].trim();
+            if sub.starts_with('@') || sub.contains("youtube.com") {
+                sub.split_whitespace().next().unwrap_or("@GoogleDevelopers").to_string()
+            } else {
+                "@GoogleDevelopers".to_string()
+            }
+        } else {
+            "@GoogleDevelopers".to_string()
+        };
+
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Executing Tool: analyze_youtube_channel".to_string(),
+                log: format!("Arguments: {{\n  \"query\": \"{}\"\n}}\n\nResult:\n(Successfully fetched YouTube channel and RSS feed data)", channel_input),
+                status: "success".to_string(),
+            }
+        }).await;
+
+        let _ = tx.send(SseEvent::Step {
+            step: AgentStep {
+                title: "Thinking Process".to_string(),
+                log: "Successfully parsed channel data. Identifying view count outliers, calculating relative performance multipliers, and formulating micro niche recommendations.".to_string(),
+                status: "success".to_string(),
+            }
+        }).await;
+
+        response = format!(
+            "## 📊 Laporan Analisis Channel YouTube: **Google for Developers** (Mode Demo)\n\n\
+             * **Channel ID**: `UC_x5XG1OV2P6uZZ5FSM9Ttw`\n\
+             * **Jumlah Video di Feed**: 15 video terakhir\n\
+             * **Rata-rata Penonton**: 6,854 views\n\
+             * **Median Penonton**: 2,310 views\n\n\
+             ### 📈 Video Outlier (Performa Tinggi / Potensi Niche)\n\n\
+             | Video | Penonton (Views) | Performa vs Median | Rilis |\n\
+             |---|---|---|---|\n\
+             | [What is the most random thing you have vibe coded lately?](https://www.youtube.com/watch?v=stBD3hJM4UQ) | **13,138** | **5.7x** | `2026-06-04` |\n\
+             | [When did you know you wanted to be a dev?](https://www.youtube.com/watch?v=fpk2AwvrwBM) | **9,420** | **4.1x** | `2026-06-05` |\n\
+             | [Can an AI agent delegate its own work?](https://www.youtube.com/watch?v=9WNc2r3l48w) | **9,151** | **4.0x** | `2026-06-04` |\n\n\
+             ### 🔍 Rekomendasi Micro Niche & Topik Kompetitif\n\n\
+             Berdasarkan judul video outlier di atas, berikut adalah kata kunci micro niche potensial yang dapat Anda masuki:\n\n\
+             * **Outlier**: *\"What is the most random thing you have vibe coded lately?\"*\n\
+               * 💡 *Ide Micro Niche*: `Vibe Coding Tutorials`, `Random AI Projects`, `Beginner Vibe Coding Guide`\n\
+             * **Outlier**: *\"Can an AI agent delegate its own work?\"*\n\
+               * 💡 *Ide Micro Niche*: `AI Agent Workflows`, `Multi-Agent Delegation`, `AI Agent Autonomy`\n\
+             * **Outlier**: *\"When did you know you wanted to be a dev?\"*\n\
+               * 💡 *Ide Micro Niche*: `Developer Journey Stories`, `Self-taught Developer Path`, `How to become a Dev`\n\n\
+             *Catatan: Ini adalah simulasi Mode Demo untuk channel `{}`. Masukkan Gemini API Key Anda di Pengaturan untuk melakukan pencarian dan analisis riil secara otonom pada channel manapun!*",
+            channel_input
+        );
+    } else if last_user_msg.contains("sistem") || last_user_msg.contains("system") || last_user_msg.contains("info") {
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
                 title: "Thinking Process".to_string(),

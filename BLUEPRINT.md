@@ -1,8 +1,8 @@
 # Project Blueprint
 
-- **Version**: 1.3.0
+- **Version**: 1.3.1
 - **Last Updated**: 2026-06-09
-- **Description**: High-performance Agentic AI Chatbot with reasoning loops, SSE streaming, local tool access, custom personality settings, hotkeys, search, and Markdown export built in Rust (Axum + Tokio) and Vanilla JS/CSS.
+- **Description**: High-performance Agentic AI Chatbot with reasoning loops, SSE streaming, local tool access, custom personality settings, hotkeys, search, Markdown export, and YouTube niche analysis built in Rust (Axum + Tokio) and Vanilla JS/CSS.
 
 ## Architecture & Modules
 
@@ -14,7 +14,7 @@
   - Collapsible live thought/reasoning logs, message avatars, and timestamps.
   - Code language labels and copy code buttons.
   - Settings modal for API key, model selection, temperature, context window, and **Custom System Prompt (Personality)**.
-  - **Quick Action Chips**: Prompt templates under input for common scenarios (View Files, Search Web, Build, Math, Threads).
+  - **Quick Action Chips**: Prompt templates under input for common scenarios (View Files, Search Web, Build, Math, Threads, **YouTube Niche Analysis**).
   - **Chat Export**: Easily export the current chat as a Markdown `.md` file download.
   - **Conversation Search**: Filter chat history in the sidebar dynamically.
   - **Enhanced Markdown**: Support for tables, blockquotes, horizontal rules, and hyperlinks inside chat bubbles.
@@ -40,3 +40,4 @@
   - `fetch_url`: Fetch web text content.
   - `execute_command`: Run whitelisted shell commands with 30s timeout (cargo, git, node, npm, python, etc.).
   - `post_to_threads`: Formats high-engagement Threads content and returns a Web Intent URL (`https://threads.net/intent/post?text=...`) to open it on the browser.
+  - `analyze_youtube_channel`: Resolves channel handle/URL, parses RSS XML feed views/dates/titles, detects outlier high-performing topics, and suggests micro niches.

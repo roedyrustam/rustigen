@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] - 2026-06-09
+
+### Added
+- **YouTube Channel Niche Analyzer**: New backend tool `analyze_youtube_channel` that extracts channel IDs from handle pages, parses video view counts from RSS feeds, calculates channel view statistics, identifies outlier videos, and auto-generates micro niche suggestions.
+- **YouTube Quick Action Chip**: Added `📺 Analisis YouTube` welcome chip to trigger the analyzer with a single click.
+
 ## [1.3.0] - 2026-06-09
 
 ### Added
