@@ -36,6 +36,7 @@ pub struct AgentStep {
 pub struct ChatResponse {
     pub steps: Vec<AgentStep>,
     pub response: String,
+    pub open_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +47,7 @@ struct ToolCall {
     content: Option<String>,
     query: Option<String>,
     url: Option<String>,
+    text: Option<String>,
 }
 
 // --- MATH EVALUATOR ---
@@ -456,49 +458,103 @@ fn percent_decode(s: &str) -> String {
     res
 }
 
+fn url_encode(s: &str) -> String {
+    let mut res = String::new();
+    for b in s.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                res.push(b as char);
+            }
+            b' ' => {
+                res.push_str("%20");
+            }
+            _ => {
+                res.push_str(&format!("%{:02X}", b));
+            }
+        }
+    }
+    res
+}
+
+pub struct ToolResult {
+    pub output: String,
+    pub open_url: Option<String>,
+}
+
+impl ToolResult {
+    fn new(output: String) -> Self {
+        Self { output, open_url: None }
+    }
+    fn with_url(output: String, url: String) -> Self {
+        Self { output, open_url: Some(url) }
+    }
+}
+
 // --- AGENT LOOP EXECUTION ---
 
-async fn execute_tool(tool_name: &str, call: &ToolCall, client: &reqwest::Client) -> String {
+async fn execute_tool(
+    tool_name: &str,
+    call: &ToolCall,
+    client: &reqwest::Client,
+) -> ToolResult {
     match tool_name {
         "calculator" => {
-            if let Some(ref expr) = call.expression {
+            let res = if let Some(ref expr) = call.expression {
                 run_calculator(expr)
             } else {
                 "Error: Missing 'expression' argument for calculator".to_string()
-            }
+            };
+            ToolResult::new(res)
         }
-        "get_system_info" => run_system_info(),
-        "get_time_date" => run_get_time_date(),
-        "list_directory" => run_list_directory(call.path.as_deref()),
+        "get_system_info" => ToolResult::new(run_system_info()),
+        "get_time_date" => ToolResult::new(run_get_time_date()),
+        "list_directory" => ToolResult::new(run_list_directory(call.path.as_deref())),
         "read_file" => {
-            if let Some(path) = &call.path {
+            let res = if let Some(path) = &call.path {
                 run_read_file(path)
             } else {
                 "Error: Missing 'path' argument for read_file".to_string()
-            }
+            };
+            ToolResult::new(res)
         }
         "write_file" => {
-            if let (Some(path), Some(content)) = (&call.path, &call.content) {
+            let res = if let (Some(path), Some(content)) = (&call.path, &call.content) {
                 run_write_file(path, content)
             } else {
                 "Error: Missing 'path' or 'content' argument for write_file".to_string()
-            }
+            };
+            ToolResult::new(res)
         }
         "search_web" => {
-            if let Some(query) = &call.query {
+            let res = if let Some(query) = &call.query {
                 run_search_web(client, query).await
             } else {
                 "Error: Missing 'query' argument for search_web".to_string()
-            }
+            };
+            ToolResult::new(res)
         }
         "fetch_url" => {
-            if let Some(url) = &call.url {
+            let res = if let Some(url) = &call.url {
                 run_fetch_url(client, url).await
             } else {
                 "Error: Missing 'url' argument for fetch_url".to_string()
+            };
+            ToolResult::new(res)
+        }
+        "post_to_threads" => {
+            if let Some(text) = &call.text {
+                let encoded = url_encode(text);
+                let intent_url = format!("https://www.threads.net/intent/post?text={}", encoded);
+                let output = format!(
+                    "Successfully generated Threads post. Opening browser tab to publish...\n\nContent:\n\"{}\"",
+                    text
+                );
+                ToolResult::with_url(output, intent_url)
+            } else {
+                ToolResult::new("Error: Missing 'text' argument for post_to_threads".to_string())
             }
         }
-        _ => format!("Error: Unknown tool '{}'", tool_name),
+        _ => ToolResult::new(format!("Error: Unknown tool '{}'", tool_name)),
     }
 }
 
@@ -532,9 +588,11 @@ You are an advanced agentic coding and analysis assistant. You have access to th
 - `write_file(path, content)`: Write or overwrite text content of a file relative to workspace. Example request: <tool_call>{\"tool\": \"write_file\", \"path\": \"src/temp.txt\", \"content\": \"Hello World!\"}</tool_call>
 - `search_web(query)`: Search the web using DuckDuckGo search. Returns matching titles, URLs, and snippets. Example request: <tool_call>{\"tool\": \"search_web\", \"query\": \"Rust Axum routing tutorial\"}</tool_call>
 - `fetch_url(url)`: Fetch and extract plain text content from a web page URL. Example request: <tool_call>{\"tool\": \"fetch_url\", \"url\": \"https://example.com\"}</tool_call>
+- `post_to_threads(text)`: Auto-publish a post to Threads. Generates high-engagement Threads content matching the timeline algorithm (strong hook, short paragraphs, spacing, ending question to drive replies, under 500 characters, no external links). Example request: <tool_call>{\"tool\": \"post_to_threads\", \"text\": \"Did you know that Rust Axum compiles down to a single binary under 10MB? 🦀\\n\\nHere is why it is the future of web dev...\\n\\nWhat is your favorite Rust framework?\"}</tool_call>
 
 To use a tool, you must respond with a JSON object enclosed in `<tool_call>` and `</tool_call>` tags.
 Before making a tool call, or if you do not need a tool call, write out your detailed thinking process enclosed in `<thought>` and `</thought>` tags. Always output the tool_call tags on a separate line.
+When creating content for Threads, always craft it to optimize timeline algorithm engagement: a compelling hook, 500 chars limit, emojis, neat paragraph spacing, and an end prompt/question to invite replies.
 
 For example:
 <thought>
@@ -549,6 +607,7 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
     let mut conversation = req.messages.clone();
     let mut steps = Vec::new();
     let mut final_response = String::new();
+    let mut response_open_url = None;
     let mut loop_count = 0;
     const MAX_LOOPS: usize = 5;
 
@@ -632,9 +691,13 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
                     
                     // Execute tool
                     let tool_result = execute_tool(&tool_name, &tool_call, client).await;
+                    if tool_result.open_url.is_some() {
+                        response_open_url = tool_result.open_url.clone();
+                    }
+                    let tool_result_str = tool_result.output;
                     
                     // Update step
-                    step_log.push_str(&format!("\nResult:\n{}", tool_result));
+                    step_log.push_str(&format!("\nResult:\n{}", tool_result_str));
                     steps[step_index].log = step_log;
                     steps[step_index].status = "success".to_string();
 
@@ -647,7 +710,7 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
                     // Append tool result as user input to history
                     conversation.push(Message {
                         role: "user".to_string(),
-                        content: format!("Tool result: {}", tool_result),
+                        content: format!("Tool result: {}", tool_result_str),
                     });
                 }
             }
@@ -677,6 +740,7 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
     Ok(ChatResponse {
         steps,
         response: final_response,
+        open_url: response_open_url,
     })
 }
 
@@ -944,6 +1008,55 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
             *Masukkan Gemini API Key untuk menguji agen otonom sesungguhnya yang dapat menelusuri file dan memecahkan kode Anda secara dinamis!*",
             dir_res
         );
+    } else if last_user_msg.contains("threads") || last_user_msg.contains("posting") || last_user_msg.contains("post ") {
+        let post_text = if last_user_msg.contains("posting ") {
+            let user_content = messages.iter().filter(|m| m.role == "user").last().unwrap().content.clone();
+            let idx = user_content.to_lowercase().find("posting ").unwrap();
+            user_content[idx + 8..].trim().to_string()
+        } else {
+            "Selamat pagi developer! 🦀\n\nSedang mengembangkan agen AI otonom dengan Rust hari ini. Kecepatannya luar biasa!\n\nBagaimana stack andalan kalian tahun ini? Let's discuss! 👇".to_string()
+        };
+
+        steps.push(AgentStep {
+            title: "Thinking Process".to_string(),
+            log: format!("User wants to post to Threads. I will analyze the content and optimize it for the Threads timeline algorithm (hook, length, emojis, and ending question)."),
+            status: "success".to_string(),
+        });
+
+        let encoded = url_encode(&post_text);
+        let intent_url = format!("https://www.threads.net/intent/post?text={}", encoded);
+
+        steps.push(AgentStep {
+            title: "Executing Tool: post_to_threads".to_string(),
+            log: format!("Arguments: {{\n  \"text\": \"{}\"\n}}\n\nResult:\nSuccessfully generated Threads Intent URL. Opening browser tab...", post_text),
+            status: "success".to_string(),
+        });
+
+        steps.push(AgentStep {
+            title: "Thinking Process".to_string(),
+            log: "Threads post intent URL generated. Sending command to open a new tab on the user's browser.".to_string(),
+            status: "success".to_string(),
+        });
+
+        response = format!(
+            "🚀 **Membuka postingan di Threads...** (Mode Demo)\n\n\
+            **Konten Terposting:**\n\
+            ```text\n\
+            {}\n\
+            ```\n\n\
+            **Analisis Algoritma Timeline Threads:**\n\
+            1. **Hook Awal**: 1-2 baris pertama menarik perhatian pembaca.\n\
+            2. **Call to Action (CTA)**: Pertanyaan di akhir mendorong interaksi (kolom balasan).\n\
+            3. **Panjang Karakter**: {} karakter (sangat di bawah limit 500).\n\n\
+            *Tab baru Threads web composer seharusnya terbuka otomatis secara lokal. Klik 'Post' untuk mempublikasikan!*",
+            post_text, post_text.chars().count()
+        );
+
+        return ChatResponse {
+            steps,
+            response,
+            open_url: Some(intent_url),
+        };
     } else {
         steps.push(AgentStep {
             title: "Thinking Process".to_string(),
@@ -971,5 +1084,5 @@ async fn run_demo_mode(messages: &[Message], client: &reqwest::Client) -> ChatRe
         );
     }
 
-    ChatResponse { steps, response }
+    ChatResponse { steps, response, open_url: None }
 }

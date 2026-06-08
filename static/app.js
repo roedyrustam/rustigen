@@ -4,7 +4,7 @@ let state = {
     activeSessionId: null,
     settings: {
         apiKey: "",
-        model: "gemini-2.5-flash",
+        model: "gemini-1.5-flash",
         temperature: 0.7
     }
 };
@@ -90,7 +90,7 @@ function loadSettings() {
     
     // Populate form fields
     settingApiKey.value = state.settings.apiKey || "";
-    settingModel.value = state.settings.model || "gemini-2.5-flash";
+    settingModel.value = state.settings.model || "gemini-1.5-flash";
     settingTempSlider.value = state.settings.temperature || 0.7;
     settingTempVal.textContent = state.settings.temperature || 0.7;
 
@@ -111,11 +111,11 @@ function saveSettings() {
 function resetSettings() {
     state.settings = {
         apiKey: "",
-        model: "gemini-2.5-flash",
+        model: "gemini-1.5-flash",
         temperature: 0.7
     };
     settingApiKey.value = "";
-    settingModel.value = "gemini-2.5-flash";
+    settingModel.value = "gemini-1.5-flash";
     settingTempSlider.value = 0.7;
     settingTempVal.textContent = "0.7";
 
@@ -289,6 +289,9 @@ function renderMessageBubble(role, content, steps) {
     // Format markdown to HTML
     bubble.innerHTML = formatMarkdown(content);
 
+    // Add Copy buttons to code blocks
+    addCopyButtons(bubble);
+
     row.appendChild(bubble);
     chatMessages.appendChild(row);
 
@@ -458,6 +461,11 @@ async function sendMessage() {
         // Render response
         renderMessageBubble("model", data.response, data.steps);
 
+        // Open browser tab if URL is provided
+        if (data.open_url) {
+            window.open(data.open_url, '_blank');
+        }
+
     } catch (error) {
         removeTypingIndicator();
         renderMessageBubble("model", `❌ **Error:** ${error.message}\n\n*Silakan cek koneksi internet Anda atau konfigurasikan ulang API Key Anda di menu Pengaturan.*`);
@@ -556,4 +564,42 @@ function formatMarkdown(text) {
     }
     
     return parts.join("");
+}
+
+function addCopyButtons(container) {
+    const preBlocks = container.querySelectorAll("pre");
+    preBlocks.forEach((pre) => {
+        pre.style.position = "relative";
+        
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "copy-code-btn";
+        copyBtn.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            <span>Salin</span>
+        `;
+        
+        copyBtn.addEventListener("click", async () => {
+            const code = pre.querySelector("code");
+            const text = code ? code.innerText : pre.innerText;
+            try {
+                await navigator.clipboard.writeText(text);
+                copyBtn.classList.add("copied");
+                copyBtn.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    <span>Tersalin!</span>
+                `;
+                setTimeout(() => {
+                    copyBtn.classList.remove("copied");
+                    copyBtn.innerHTML = `
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                        <span>Salin</span>
+                    `;
+                }, 2000);
+            } catch (err) {
+                console.error("Gagal menyalin teks: ", err);
+            }
+        });
+        
+        pre.appendChild(copyBtn);
+    });
 }
