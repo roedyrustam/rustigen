@@ -1,20 +1,19 @@
 use axum::{
-    routing::post,
-    Router,
-    Json,
+    Json, Router,
     response::{
-        sse::{Event, KeepAlive, Sse},
         IntoResponse,
+        sse::{Event, KeepAlive, Sse},
     },
+    routing::post,
 };
-use tower_http::services::{ServeDir, ServeFile};
+use futures_util::stream::StreamExt;
 use std::convert::Infallible;
-use tower_http::cors::CorsLayer;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tokio_stream::wrappers::ReceiverStream;
-use futures_util::stream::StreamExt;
+use tower_http::cors::CorsLayer;
+use tower_http::services::{ServeDir, ServeFile};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod agent;
 
@@ -38,9 +37,11 @@ async fn main() -> Result<(), anyhow::Error> {
     if env_api_key.is_some() {
         tracing::info!("Found GEMINI_API_KEY in server environment.");
     } else {
-        tracing::info!("No GEMINI_API_KEY found in server environment. Starting in Demo Mode by default.");
+        tracing::info!(
+            "No GEMINI_API_KEY found in server environment. Starting in Demo Mode by default."
+        );
     }
-    
+
     let state = Arc::new(AppState {
         client: reqwest::Client::new(),
         env_api_key,
@@ -50,8 +51,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let cors = CorsLayer::permissive();
 
     // Serve static files from './static' directory, falling back to 'index.html' for SPA routing
-    let serve_dir = ServeDir::new("static")
-        .fallback(ServeFile::new("static/index.html"));
+    let serve_dir = ServeDir::new("static").fallback(ServeFile::new("static/index.html"));
 
     let app = Router::new()
         .route("/api/chat", post(chat_handler))

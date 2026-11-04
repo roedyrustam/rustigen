@@ -1,9 +1,9 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use std::time::Instant;
-use anyhow::Result;
-use tracing::info;
 use tokio::sync::mpsc;
+use tracing::info;
 
 static START_TIME: OnceLock<Instant> = OnceLock::new();
 
@@ -186,7 +186,7 @@ fn run_system_info() -> String {
     let hours = uptime / 3600;
     let minutes = (uptime % 3600) / 60;
     let seconds = uptime % 60;
-    
+
     format!(
         "System Information:\n\
          - Operating System: {}\n\
@@ -207,7 +207,11 @@ fn run_list_directory(path_opt: Option<&str>) -> String {
     let target_path = if let Some(p) = path_opt {
         // Prevent path traversal outside workspace for security
         let path = std::path::Path::new(p);
-        if path.is_absolute() || path.components().any(|c| c == std::path::Component::ParentDir) {
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+        {
             return "Error: Path must be relative and remain inside the workspace".to_string();
         }
         base_path.join(path)
@@ -217,7 +221,10 @@ fn run_list_directory(path_opt: Option<&str>) -> String {
 
     match std::fs::read_dir(&target_path) {
         Ok(entries) => {
-            let mut result = format!("Contents of directory '{}':\n", target_path.to_string_lossy());
+            let mut result = format!(
+                "Contents of directory '{}':\n",
+                target_path.to_string_lossy()
+            );
             let mut files = Vec::new();
             for entry in entries {
                 if let Ok(entry) = entry {
@@ -244,7 +251,11 @@ fn run_list_directory(path_opt: Option<&str>) -> String {
 fn run_read_file(path_str: &str) -> String {
     let base_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let path = std::path::Path::new(path_str);
-    if path.is_absolute() || path.components().any(|c| c == std::path::Component::ParentDir) {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+    {
         return "Error: Path must be relative and remain inside the workspace".to_string();
     }
     let target_path = base_path.join(path);
@@ -257,7 +268,11 @@ fn run_read_file(path_str: &str) -> String {
 fn run_write_file(path_str: &str, content: &str) -> String {
     let base_path = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let path = std::path::Path::new(path_str);
-    if path.is_absolute() || path.components().any(|c| c == std::path::Component::ParentDir) {
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+    {
         return "Error: Path must be relative and remain inside the workspace".to_string();
     }
     let target_path = base_path.join(path);
@@ -347,9 +362,8 @@ async fn run_search_web(client: &reqwest::Client, query: &str) -> String {
 
 // --- EXECUTE COMMAND TOOL ---
 const COMMAND_WHITELIST: &[&str] = &[
-    "cargo", "rustc", "rustup", "dir", "ls", "type", "cat", "echo",
-    "node", "npm", "npx", "git", "python", "python3", "pip",
-    "whoami", "hostname", "ping", "curl", "where", "which",
+    "cargo", "rustc", "rustup", "dir", "ls", "type", "cat", "echo", "node", "npm", "npx", "git",
+    "python", "python3", "pip", "whoami", "hostname", "ping", "curl", "where", "which",
 ];
 
 async fn run_execute_command(command: &str, args: &[String]) -> String {
@@ -368,15 +382,19 @@ async fn run_execute_command(command: &str, args: &[String]) -> String {
 
     let workspace = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    info!("Executing command: {} {:?} in {:?}", command, args, workspace);
+    info!(
+        "Executing command: {} {:?} in {:?}",
+        command, args, workspace
+    );
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         tokio::process::Command::new(command)
             .args(args)
             .current_dir(&workspace)
-            .output()
-    ).await;
+            .output(),
+    )
+    .await;
 
     match result {
         Ok(Ok(output)) => {
@@ -477,7 +495,9 @@ fn parse_ddg_html(html: &str) -> Vec<(String, String, String)> {
 
         let snippet_search_pos = title_content_end;
         let mut snippet = String::new();
-        if let Some(snippet_class_pos) = html[snippet_search_pos..].find("class=\"result__snippet\"") {
+        if let Some(snippet_class_pos) =
+            html[snippet_search_pos..].find("class=\"result__snippet\"")
+        {
             let snip_start = snippet_search_pos + snippet_class_pos;
             let next_result_pos = html[title_content_end..].find("class=\"result__a\"");
             if next_result_pos.is_none() || snippet_class_pos < next_result_pos.unwrap() {
@@ -491,7 +511,7 @@ fn parse_ddg_html(html: &str) -> Vec<(String, String, String)> {
                 }
             }
         }
-        
+
         results.push((title, decoded_url, snippet));
         search_idx = title_content_end;
         if results.len() >= 5 {
@@ -532,7 +552,9 @@ fn percent_decode(s: &str) -> String {
                 }
             } else {
                 res.push('%');
-                if let Some(c1) = h1 { res.push(c1); }
+                if let Some(c1) = h1 {
+                    res.push(c1);
+                }
             }
         } else if c == '+' {
             res.push(' ');
@@ -579,14 +601,14 @@ fn parse_channel_details(body: &str, input_id: Option<&str>) -> ChannelDetails {
         if let Some(pos) = body.find("itemprop=\"channelId\" content=\"UC") {
             let start = pos + 30;
             if body.len() >= start + 24 {
-                channel_id = body[start..start+24].to_string();
+                channel_id = body[start..start + 24].to_string();
             }
         }
         if channel_id.is_empty() {
             if let Some(pos) = body.find("channel_id=UC") {
                 let start = pos + 11;
                 if body.len() >= start + 24 {
-                    channel_id = body[start..start+24].to_string();
+                    channel_id = body[start..start + 24].to_string();
                 }
             }
         }
@@ -594,7 +616,7 @@ fn parse_channel_details(body: &str, input_id: Option<&str>) -> ChannelDetails {
             if let Some(pos) = body.find("\"channelId\":\"UC") {
                 let start = pos + 13;
                 if body.len() >= start + 24 {
-                    channel_id = body[start..start+24].to_string();
+                    channel_id = body[start..start + 24].to_string();
                 }
             }
         }
@@ -602,7 +624,7 @@ fn parse_channel_details(body: &str, input_id: Option<&str>) -> ChannelDetails {
             if let Some(pos) = body.find("\"externalChannelId\":\"UC") {
                 let start = pos + 21;
                 if body.len() >= start + 24 {
-                    channel_id = body[start..start+24].to_string();
+                    channel_id = body[start..start + 24].to_string();
                 }
             }
         }
@@ -610,7 +632,7 @@ fn parse_channel_details(body: &str, input_id: Option<&str>) -> ChannelDetails {
             if let Some(pos) = body.find("href=\"https://www.youtube.com/channel/UC") {
                 let start = pos + 38;
                 if body.len() >= start + 24 {
-                    channel_id = body[start..start+24].to_string();
+                    channel_id = body[start..start + 24].to_string();
                 }
             }
         }
@@ -618,17 +640,17 @@ fn parse_channel_details(body: &str, input_id: Option<&str>) -> ChannelDetails {
             let chars: Vec<char> = body.chars().collect();
             let mut i = 0;
             while i < chars.len().saturating_sub(24) {
-                if chars[i] == 'U' && chars[i+1] == 'C' {
+                if chars[i] == 'U' && chars[i + 1] == 'C' {
                     let mut is_valid = true;
                     for j in 2..24 {
-                        let c = chars[i+j];
+                        let c = chars[i + j];
                         if !c.is_alphanumeric() && c != '_' && c != '-' {
                             is_valid = false;
                             break;
                         }
                     }
                     if is_valid {
-                        channel_id = chars[i..i+24].iter().collect();
+                        channel_id = chars[i..i + 24].iter().collect();
                         break;
                     }
                 }
@@ -758,10 +780,12 @@ fn parse_youtube_rss(xml: &str) -> Vec<YoutubeVideo> {
     let parts: Vec<&str> = xml.split("<entry>").collect();
     for part in parts.iter().skip(1) {
         let title = extract_tag_content(part, "<title>", "</title>").unwrap_or_default();
-        let video_id = extract_tag_content(part, "<yt:videoId>", "</yt:videoId>").unwrap_or_default();
-        let published = extract_tag_content(part, "<published>", "</published>").unwrap_or_default();
+        let video_id =
+            extract_tag_content(part, "<yt:videoId>", "</yt:videoId>").unwrap_or_default();
+        let published =
+            extract_tag_content(part, "<published>", "</published>").unwrap_or_default();
         let views = extract_attribute_value(part, "<media:statistics", "views").unwrap_or(0);
-        
+
         if !video_id.is_empty() {
             videos.push(YoutubeVideo {
                 title,
@@ -796,7 +820,7 @@ fn extract_attribute_value(xml: &str, element_start: &str, attr_name: &str) -> O
         let sub = &xml[el_idx..];
         let end_bracket = sub.find('>').unwrap_or(sub.len());
         let element_content = &sub[..end_bracket];
-        
+
         let attr_pattern = format!("{}=\"", attr_name);
         if let Some(attr_idx) = element_content.find(&attr_pattern) {
             let val_start = attr_idx + attr_pattern.len();
@@ -821,7 +845,10 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
     if !is_id_only && !is_url && !is_handle {
         // Treat as a search query keyword!
         let encoded_query = url_encode(input_trimmed);
-        let search_url = format!("https://www.youtube.com/results?search_query={}&sp=EgIQAg%253D%253D", encoded_query);
+        let search_url = format!(
+            "https://www.youtube.com/results?search_query={}&sp=EgIQAg%253D%253D",
+            encoded_query
+        );
 
         let search_req = client.get(&search_url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -839,11 +866,21 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
         };
 
         if let Some(handle) = extract_first_search_handle(&search_body) {
-            let formatted_handle = if handle.starts_with("@") { handle.clone() } else { format!("@{}", handle) };
-            search_info_msg = format!("*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **{}***\n\n", input_trimmed, formatted_handle);
+            let formatted_handle = if handle.starts_with("@") {
+                handle.clone()
+            } else {
+                format!("@{}", handle)
+            };
+            search_info_msg = format!(
+                "*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **{}***\n\n",
+                input_trimmed, formatted_handle
+            );
             target_url = format!("https://www.youtube.com/{}", formatted_handle);
         } else {
-            return format!("Error: Tidak dapat menemukan channel YouTube yang cocok untuk kata kunci \"{}\".", input_trimmed);
+            return format!(
+                "Error: Tidak dapat menemukan channel YouTube yang cocok untuk kata kunci \"{}\".",
+                input_trimmed
+            );
         }
     } else if !target_url.starts_with("http") {
         if is_id_only {
@@ -859,7 +896,7 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .send()
         .await;
-        
+
     let response = match req {
         Ok(res) => res,
         Err(e) => return format!("Error: Gagal menghubungi YouTube: {}", e),
@@ -870,12 +907,22 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
         Err(e) => return format!("Error: Gagal membaca halaman YouTube: {}", e),
     };
 
-    let details = parse_channel_details(&body, if is_id_only { Some(input_trimmed) } else { None });
+    let details = parse_channel_details(
+        &body,
+        if is_id_only {
+            Some(input_trimmed)
+        } else {
+            None
+        },
+    );
     if details.id.is_empty() {
         return "Error: Tidak dapat menemukan YouTube Channel ID dari halaman channel.".to_string();
     }
 
-    let rss_url = format!("https://www.youtube.com/feeds/videos.xml?channel_id={}", details.id);
+    let rss_url = format!(
+        "https://www.youtube.com/feeds/videos.xml?channel_id={}",
+        details.id
+    );
     let rss_req = client.get(&rss_url)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .send()
@@ -892,21 +939,21 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
     };
 
     let videos = parse_youtube_rss(&xml);
-    
+
     if videos.is_empty() {
         return format!(
-            "### Analisis Channel YouTube: {}\n\nTidak ada video yang ditemukan pada feed RSS channel ini. Pastikan channel tersebut aktif.", 
+            "### Analisis Channel YouTube: {}\n\nTidak ada video yang ditemukan pada feed RSS channel ini. Pastikan channel tersebut aktif.",
             details.title
         );
     }
 
     let mut views_list: Vec<u64> = videos.iter().map(|v| v.views).collect();
     views_list.sort_unstable();
-    
+
     let total_views: u64 = views_list.iter().sum();
     let count = views_list.len() as u64;
     let avg_views = total_views / count;
-    
+
     let median_views = if count % 2 == 0 {
         let mid = (count / 2) as usize;
         (views_list[mid - 1] + views_list[mid]) / 2
@@ -915,7 +962,7 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
     };
 
     let threshold = (median_views as f64 * 1.5).max(avg_views as f64 * 1.2) as u64;
-    
+
     let mut outliers = Vec::new();
     for v in &videos {
         if v.views >= threshold && v.views > 100 {
@@ -943,7 +990,16 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
          * **Rata-rata Penonton**: **{}** views\n\
          * **Median Penonton**: **{}** views\n\n\
          ### 📈 Video Outlier (Performa Tinggi / Potensi Niche)\n\n",
-        avatar_markdown, search_info_msg, details.title, details.id, details.subscribers, details.videos, details.description, count, avg_views, median_views
+        avatar_markdown,
+        search_info_msg,
+        details.title,
+        details.id,
+        details.subscribers,
+        details.videos,
+        details.description,
+        count,
+        avg_views,
+        median_views
     );
 
     if outliers.is_empty() {
@@ -954,7 +1010,11 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
         report.push_str("|---|---|---|---|\n");
         for v in &outliers {
             let multiplier = v.views as f64 / median_views.max(1) as f64;
-            let date_str = if v.published.len() >= 10 { &v.published[..10] } else { &v.published };
+            let date_str = if v.published.len() >= 10 {
+                &v.published[..10]
+            } else {
+                &v.published
+            };
             report.push_str(&format!(
                 "| [{}]({}watch?v={}) | **{}** | **{:.1}x** | `{}` |\n",
                 v.title, "https://www.youtube.com/", v.video_id, v.views, multiplier, date_str
@@ -968,9 +1028,11 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
     } else {
         report.push_str("Berdasarkan judul video outlier di atas, berikut adalah kata kunci micro niche potensial yang dapat Anda masuki:\n\n");
         for v in &outliers {
-            let clean_title = v.title.replace(|c: char| !c.is_alphanumeric() && c != ' ', "");
+            let clean_title = v
+                .title
+                .replace(|c: char| !c.is_alphanumeric() && c != ' ', "");
             let words: Vec<&str> = clean_title.split_whitespace().collect();
-            
+
             let mut niche_ideas = Vec::new();
             if words.len() >= 3 {
                 niche_ideas.push(words[..3].join(" "));
@@ -981,12 +1043,13 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
             if words.len() >= 5 {
                 niche_ideas.push(words[2..5].join(" "));
             }
-            
-            let ideas_formatted = niche_ideas.iter()
+
+            let ideas_formatted = niche_ideas
+                .iter()
                 .map(|s| format!("`{}`", s))
                 .collect::<Vec<String>>()
                 .join(", ");
-                
+
             report.push_str(&format!(
                 "* **Outlier**: *\"{}\"*\n  * 💡 *Ide Micro Niche*: {}\n",
                 v.title, ideas_formatted
@@ -995,7 +1058,7 @@ async fn run_youtube_analysis(client: &reqwest::Client, channel_input: &str) -> 
     }
 
     report.push_str("\n*Catatan: Analisis ini didasarkan pada performa relatif video terakhir di feed RSS YouTube channel. Outlier performa tinggi biasanya menandakan topik dengan demand tinggi di segmen penonton tersebut.*");
-    
+
     report
 }
 
@@ -1006,10 +1069,16 @@ pub struct ToolResult {
 
 impl ToolResult {
     fn new(output: String) -> Self {
-        Self { output, open_url: None }
+        Self {
+            output,
+            open_url: None,
+        }
     }
     fn with_url(output: String, url: String) -> Self {
-        Self { output, open_url: Some(url) }
+        Self {
+            output,
+            open_url: Some(url),
+        }
     }
 }
 
@@ -1024,52 +1093,62 @@ async fn publish_to_threads_api(
         url_encode(text),
         token
     );
-    
-    let res = client.post(&create_url)
+
+    let res = client
+        .post(&create_url)
         .send()
         .await
         .map_err(|e| format!("Gagal mengirim request media container: {}", e))?;
-        
+
     let status = res.status();
     let body = res.text().await.unwrap_or_default();
-    
+
     if !status.is_success() {
         return Err(format!("API Error (status {}): {}", status, body));
     }
-    
+
     let json: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| format!("Gagal parse JSON media container: {}", e))?;
-        
-    let container_id = json.get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("ID media container tidak ditemukan dalam response: {}", body))?;
+
+    let container_id = json.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+        format!(
+            "ID media container tidak ditemukan dalam response: {}",
+            body
+        )
+    })?;
 
     // 2. Publish the Container
     let publish_url = format!(
         "https://graph.threads.net/v1.0/me/threads_publish?creation_id={}&access_token={}",
-        container_id,
-        token
+        container_id, token
     );
-    
-    let res_publish = client.post(&publish_url)
+
+    let res_publish = client
+        .post(&publish_url)
         .send()
         .await
         .map_err(|e| format!("Gagal mengirim request publish: {}", e))?;
-        
+
     let status_publish = res_publish.status();
     let body_publish = res_publish.text().await.unwrap_or_default();
-    
+
     if !status_publish.is_success() {
-        return Err(format!("API Error Publish (status {}): {}", status_publish, body_publish));
+        return Err(format!(
+            "API Error Publish (status {}): {}",
+            status_publish, body_publish
+        ));
     }
-    
+
     let json_pub: serde_json::Value = serde_json::from_str(&body_publish)
         .map_err(|e| format!("Gagal parse JSON publish: {}", e))?;
-        
-    let post_id = json_pub.get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("ID post tidak ditemukan dalam response publish: {}", body_publish))?;
-        
+
+    let post_id = json_pub.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
+        format!(
+            "ID post tidak ditemukan dalam response publish: {}",
+            body_publish
+        )
+    })?;
+
     Ok(post_id.to_string())
 }
 
@@ -1153,7 +1232,7 @@ async fn execute_tool(
             if let Some(text) = &call.text {
                 let encoded = url_encode(text);
                 let intent_url = format!("https://www.threads.net/intent/post?text={}", encoded);
-                
+
                 if let Some(token) = threads_token {
                     match publish_to_threads_api(client, text, token).await {
                         Ok(post_id) => {
@@ -1188,7 +1267,10 @@ async fn execute_tool(
                     tokio::spawn(async {
                         tokio::time::sleep(std::time::Duration::from_secs(6)).await;
                         let _ = tokio::process::Command::new("powershell")
-                            .args(&["-Command", "(New-Object -ComObject Wscript.Shell).SendKeys('^{ENTER}')"])
+                            .args(&[
+                                "-Command",
+                                "(New-Object -ComObject Wscript.Shell).SendKeys('^{ENTER}')",
+                            ])
                             .output()
                             .await;
                     });
@@ -1303,9 +1385,11 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
         let response = match client.post(&url).json(&request_body).send().await {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx.send(SseEvent::Error {
-                    message: format!("Failed to send request to Gemini API: {}", e),
-                }).await;
+                let _ = tx
+                    .send(SseEvent::Error {
+                        message: format!("Failed to send request to Gemini API: {}", e),
+                    })
+                    .await;
                 let _ = tx.send(SseEvent::Done).await;
                 return;
             }
@@ -1314,9 +1398,11 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
         let status = response.status();
         if !status.is_success() {
             let err_text = response.text().await.unwrap_or_default();
-            let _ = tx.send(SseEvent::Error {
-                message: format!("Gemini API returned status {}: {}", status, err_text),
-            }).await;
+            let _ = tx
+                .send(SseEvent::Error {
+                    message: format!("Gemini API returned status {}: {}", status, err_text),
+                })
+                .await;
             let _ = tx.send(SseEvent::Done).await;
             return;
         }
@@ -1324,9 +1410,11 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
         let resp_json: serde_json::Value = match response.json().await {
             Ok(j) => j,
             Err(e) => {
-                let _ = tx.send(SseEvent::Error {
-                    message: format!("Failed to parse Gemini API response: {}", e),
-                }).await;
+                let _ = tx
+                    .send(SseEvent::Error {
+                        message: format!("Failed to parse Gemini API response: {}", e),
+                    })
+                    .await;
                 let _ = tx.send(SseEvent::Done).await;
                 return;
             }
@@ -1336,9 +1424,11 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
         let output_text = match resp_json["candidates"][0]["content"]["parts"][0]["text"].as_str() {
             Some(t) => t.to_string(),
             None => {
-                let _ = tx.send(SseEvent::Error {
-                    message: format!("Empty response from Gemini API: {:?}", resp_json),
-                }).await;
+                let _ = tx
+                    .send(SseEvent::Error {
+                        message: format!("Empty response from Gemini API: {:?}", resp_json),
+                    })
+                    .await;
                 let _ = tx.send(SseEvent::Done).await;
                 return;
             }
@@ -1349,14 +1439,18 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
         // Parse thought if present
         if let Some(start_thought) = output_text.find("<thought>") {
             if let Some(end_thought) = output_text.find("</thought>") {
-                let thought_content = output_text[start_thought + 9..end_thought].trim().to_string();
-                let _ = tx.send(SseEvent::Step {
-                    step: AgentStep {
-                        title: "Thinking Process".to_string(),
-                        log: thought_content,
-                        status: "success".to_string(),
-                    }
-                }).await;
+                let thought_content = output_text[start_thought + 9..end_thought]
+                    .trim()
+                    .to_string();
+                let _ = tx
+                    .send(SseEvent::Step {
+                        step: AgentStep {
+                            title: "Thinking Process".to_string(),
+                            log: thought_content,
+                            status: "success".to_string(),
+                        },
+                    })
+                    .await;
             }
         }
 
@@ -1367,35 +1461,45 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
                 let tool_json_str = &output_text[start_tool + 11..end_tool];
                 if let Ok(tool_call) = serde_json::from_str::<ToolCall>(tool_json_str) {
                     has_tool_call = true;
-                    
+
                     let tool_name = tool_call.tool.clone();
-                    
+
                     // Send pending step
-                    let _ = tx.send(SseEvent::Step {
-                        step: AgentStep {
-                            title: format!("Executing Tool: {}", tool_name),
-                            log: format!("Arguments: {}\nRunning...", tool_json_str.trim()),
-                            status: "pending".to_string(),
-                        }
-                    }).await;
-                    
+                    let _ = tx
+                        .send(SseEvent::Step {
+                            step: AgentStep {
+                                title: format!("Executing Tool: {}", tool_name),
+                                log: format!("Arguments: {}\nRunning...", tool_json_str.trim()),
+                                status: "pending".to_string(),
+                            },
+                        })
+                        .await;
+
                     // Execute tool
-                    let tool_result = execute_tool(&tool_name, &tool_call, client, req.threads_token.as_deref()).await;
+                    let tool_result =
+                        execute_tool(&tool_name, &tool_call, client, req.threads_token.as_deref())
+                            .await;
 
                     if let Some(ref url) = tool_result.open_url {
                         let _ = tx.send(SseEvent::OpenUrl { url: url.clone() }).await;
                     }
 
                     let tool_result_str = tool_result.output;
-                    
+
                     // Send completed step
-                    let _ = tx.send(SseEvent::Step {
-                        step: AgentStep {
-                            title: format!("Executing Tool: {}", tool_name),
-                            log: format!("Arguments: {}\n\nResult:\n{}", tool_json_str.trim(), tool_result_str),
-                            status: "success".to_string(),
-                        }
-                    }).await;
+                    let _ = tx
+                        .send(SseEvent::Step {
+                            step: AgentStep {
+                                title: format!("Executing Tool: {}", tool_name),
+                                log: format!(
+                                    "Arguments: {}\n\nResult:\n{}",
+                                    tool_json_str.trim(),
+                                    tool_result_str
+                                ),
+                                status: "success".to_string(),
+                            },
+                        })
+                        .await;
 
                     // Append model's thought & tool call to history
                     conversation.push(Message {
@@ -1422,7 +1526,7 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
                 .unwrap_or(&output_text)
                 .trim()
                 .to_string();
-            
+
             // Stream response in chunks for typing effect
             let chars: Vec<char> = clean_response.chars().collect();
             let chunk_size = 12; // characters per chunk for smooth typing
@@ -1436,9 +1540,11 @@ Once you receive the tool result, analyze it, make further tool calls if needed,
     }
 
     if loop_count >= MAX_LOOPS {
-        let _ = tx.send(SseEvent::Chunk {
-            text: "Agent loop exceeded maximum turns without final response.".to_string(),
-        }).await;
+        let _ = tx
+            .send(SseEvent::Chunk {
+                text: "Agent loop exceeded maximum turns without final response.".to_string(),
+            })
+            .await;
     }
 
     let _ = tx.send(SseEvent::Done).await;
@@ -1459,7 +1565,10 @@ async fn run_demo_mode_streaming(
 
     let response: String;
 
-    if last_user_msg.contains("youtube") || last_user_msg.contains("niche") || last_user_msg.contains("analisis channel") {
+    if last_user_msg.contains("youtube")
+        || last_user_msg.contains("niche")
+        || last_user_msg.contains("analisis channel")
+    {
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
                 title: "Thinking Process".to_string(),
@@ -1468,22 +1577,56 @@ async fn run_demo_mode_streaming(
             }
         }).await;
 
-        let user_content = messages.iter().filter(|m| m.role == "user").last().unwrap().content.clone();
+        let user_content = messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .last()
+            .unwrap()
+            .content
+            .clone();
         let (channel_input, search_info_msg) = if last_user_msg.contains("channel ") {
             let idx = user_content.to_lowercase().find("channel ").unwrap();
             let sub = user_content[idx + 8..].trim();
-            let handle = sub.split_whitespace().next().unwrap_or("@GoogleDevelopers").to_string();
+            let handle = sub
+                .split_whitespace()
+                .next()
+                .unwrap_or("@GoogleDevelopers")
+                .to_string();
             (handle, "".to_string())
         } else if last_user_msg.contains("topik ") {
             let idx = user_content.to_lowercase().find("topik ").unwrap();
             let sub = user_content[idx + 6..].trim();
-            let keyword = sub.split('"').filter(|s| !s.trim().is_empty()).next().unwrap_or("belajar rust").trim().to_string();
-            ("@GoogleDevelopers".to_string(), format!("*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **@GoogleDevelopers***\n\n", keyword))
+            let keyword = sub
+                .split('"')
+                .filter(|s| !s.trim().is_empty())
+                .next()
+                .unwrap_or("belajar rust")
+                .trim()
+                .to_string();
+            (
+                "@GoogleDevelopers".to_string(),
+                format!(
+                    "*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **@GoogleDevelopers***\n\n",
+                    keyword
+                ),
+            )
         } else if last_user_msg.contains("keyword ") {
             let idx = user_content.to_lowercase().find("keyword ").unwrap();
             let sub = user_content[idx + 8..].trim();
-            let keyword = sub.split('"').filter(|s| !s.trim().is_empty()).next().unwrap_or("belajar rust").trim().to_string();
-            ("@GoogleDevelopers".to_string(), format!("*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **@GoogleDevelopers***\n\n", keyword))
+            let keyword = sub
+                .split('"')
+                .filter(|s| !s.trim().is_empty())
+                .next()
+                .unwrap_or("belajar rust")
+                .trim()
+                .to_string();
+            (
+                "@GoogleDevelopers".to_string(),
+                format!(
+                    "*Hasil pencarian kata kunci: **\"{}\"** &rarr; Menganalisis channel: **@GoogleDevelopers***\n\n",
+                    keyword
+                ),
+            )
         } else {
             ("@GoogleDevelopers".to_string(), "".to_string())
         };
@@ -1535,7 +1678,10 @@ async fn run_demo_mode_streaming(
              *Catatan: Ini adalah simulasi Mode Demo untuk channel `{}`. Masukkan Gemini API Key Anda di Pengaturan untuk melakukan pencarian dan analisis riil secara otonom pada channel manapun!*",
             search_info_msg, "", channel_input
         );
-    } else if last_user_msg.contains("sistem") || last_user_msg.contains("system") || last_user_msg.contains("info") {
+    } else if last_user_msg.contains("sistem")
+        || last_user_msg.contains("system")
+        || last_user_msg.contains("info")
+    {
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
                 title: "Thinking Process".to_string(),
@@ -1543,15 +1689,17 @@ async fn run_demo_mode_streaming(
                 status: "success".to_string(),
             }
         }).await;
-        
+
         let sys_info = run_system_info();
-        let _ = tx.send(SseEvent::Step {
-            step: AgentStep {
-                title: "Executing Tool: get_system_info".to_string(),
-                log: format!("Arguments: {{}}\n\nResult:\n{}", sys_info),
-                status: "success".to_string(),
-            }
-        }).await;
+        let _ = tx
+            .send(SseEvent::Step {
+                step: AgentStep {
+                    title: "Executing Tool: get_system_info".to_string(),
+                    log: format!("Arguments: {{}}\n\nResult:\n{}", sys_info),
+                    status: "success".to_string(),
+                },
+            })
+            .await;
 
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
@@ -1570,13 +1718,25 @@ async fn run_demo_mode_streaming(
             *Catatan: Anda berada di Mode Demo karena tidak ada API Key yang dipasang. Pasang API Key di Pengaturan untuk terhubung dengan Gemini API sesungguhnya!*",
             std::env::consts::OS,
             std::env::consts::ARCH,
-            std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             {
                 let uptime = START_TIME.get().map(|t| t.elapsed().as_secs()).unwrap_or(0);
-                format!("{} jam {} menit {} detik", uptime / 3600, (uptime % 3600) / 60, uptime % 60)
+                format!(
+                    "{} jam {} menit {} detik",
+                    uptime / 3600,
+                    (uptime % 3600) / 60,
+                    uptime % 60
+                )
             }
         );
-    } else if last_user_msg.contains("hitung") || last_user_msg.contains("math") || last_user_msg.contains("calculator") || last_user_msg.contains("+") || last_user_msg.contains("*") {
+    } else if last_user_msg.contains("hitung")
+        || last_user_msg.contains("math")
+        || last_user_msg.contains("calculator")
+        || last_user_msg.contains("+")
+        || last_user_msg.contains("*")
+    {
         let mut expr = "15 * (24 + 6)".to_string();
         for word in last_user_msg.split_whitespace() {
             if word.chars().any(|c| c.is_digit(10)) && word.chars().any(|c| "+-*/()".contains(c)) {
@@ -1594,13 +1754,18 @@ async fn run_demo_mode_streaming(
         }).await;
 
         let calc_res = run_calculator(&expr);
-        let _ = tx.send(SseEvent::Step {
-            step: AgentStep {
-                title: "Executing Tool: calculator".to_string(),
-                log: format!("Arguments: {{\n  \"expression\": \"{}\"\n}}\n\nResult:\n{}", expr, calc_res),
-                status: "success".to_string(),
-            }
-        }).await;
+        let _ = tx
+            .send(SseEvent::Step {
+                step: AgentStep {
+                    title: "Executing Tool: calculator".to_string(),
+                    log: format!(
+                        "Arguments: {{\n  \"expression\": \"{}\"\n}}\n\nResult:\n{}",
+                        expr, calc_res
+                    ),
+                    status: "success".to_string(),
+                },
+            })
+            .await;
 
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
@@ -1616,18 +1781,26 @@ async fn run_demo_mode_streaming(
             **Hasil**: `{}`\n\n\
             *Pasang Gemini API Key di menu Pengaturan (ikon gir di pojok kiri bawah) untuk menghubungkan agen ini dengan model LLM sesungguhnya!*",
             expr,
-            evaluate_math(&expr).map(|v| v.to_string()).unwrap_or_else(|e| format!("Error ({})", e))
+            evaluate_math(&expr)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|e| format!("Error ({})", e))
         );
-    } else if last_user_msg.contains("baca file") || last_user_msg.contains("read file") || last_user_msg.contains("buka file") {
+    } else if last_user_msg.contains("baca file")
+        || last_user_msg.contains("read file")
+        || last_user_msg.contains("buka file")
+    {
         let mut path_found = None;
         for word in last_user_msg.split_whitespace() {
             if word.contains('.') || word.contains('/') || word.contains('\\') {
-                path_found = Some(word.trim_matches(|c| c == '`' || c == '\'' || c == '"').to_string());
+                path_found = Some(
+                    word.trim_matches(|c| c == '`' || c == '\'' || c == '"')
+                        .to_string(),
+                );
                 break;
             }
         }
         let path = path_found.unwrap_or_else(|| "Cargo.toml".to_string());
-        
+
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
                 title: "Thinking Process".to_string(),
@@ -1635,9 +1808,9 @@ async fn run_demo_mode_streaming(
                 status: "success".to_string(),
             }
         }).await;
-        
+
         let content = run_read_file(&path);
-        
+
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
                 title: "Executing Tool: read_file".to_string(),
@@ -1662,16 +1835,25 @@ async fn run_demo_mode_streaming(
             *Catatan: Anda sedang di Mode Demo. Masukkan Gemini API Key untuk otonomi penuh!*",
             path, content
         );
-    } else if last_user_msg.contains("tulis file") || last_user_msg.contains("buat file") || last_user_msg.contains("write file") {
+    } else if last_user_msg.contains("tulis file")
+        || last_user_msg.contains("buat file")
+        || last_user_msg.contains("write file")
+    {
         let mut path_found = None;
         for word in last_user_msg.split_whitespace() {
             if word.contains('.') || word.contains('/') || word.contains('\\') {
-                path_found = Some(word.trim_matches(|c| c == '`' || c == '\'' || c == '"').to_string());
+                path_found = Some(
+                    word.trim_matches(|c| c == '`' || c == '\'' || c == '"')
+                        .to_string(),
+                );
                 break;
             }
         }
         let path = path_found.unwrap_or_else(|| "test_demo.txt".to_string());
-        let mock_content = format!("Hello from Rust Agentic Chatbot Demo Mode!\nCreated at: {}", run_get_time_date());
+        let mock_content = format!(
+            "Hello from Rust Agentic Chatbot Demo Mode!\nCreated at: {}",
+            run_get_time_date()
+        );
 
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
@@ -1691,13 +1873,16 @@ async fn run_demo_mode_streaming(
             }
         }).await;
 
-        let _ = tx.send(SseEvent::Step {
-            step: AgentStep {
-                title: "Thinking Process".to_string(),
-                log: "File has been written. I will report the success to the user.".to_string(),
-                status: "success".to_string(),
-            }
-        }).await;
+        let _ = tx
+            .send(SseEvent::Step {
+                step: AgentStep {
+                    title: "Thinking Process".to_string(),
+                    log: "File has been written. I will report the success to the user."
+                        .to_string(),
+                    status: "success".to_string(),
+                },
+            })
+            .await;
 
         response = format!(
             "Berhasil menulis file di `{}` (Mode Demo):\n\n\
@@ -1708,7 +1893,11 @@ async fn run_demo_mode_streaming(
             ```",
             path, write_res, mock_content
         );
-    } else if last_user_msg.contains("jalankan") || last_user_msg.contains("execute") || last_user_msg.contains("run ") || last_user_msg.contains("command") {
+    } else if last_user_msg.contains("jalankan")
+        || last_user_msg.contains("execute")
+        || last_user_msg.contains("run ")
+        || last_user_msg.contains("command")
+    {
         let command = "cargo";
         let args = vec!["--version".to_string()];
 
@@ -1730,13 +1919,16 @@ async fn run_demo_mode_streaming(
             }
         }).await;
 
-        let _ = tx.send(SseEvent::Step {
-            step: AgentStep {
-                title: "Thinking Process".to_string(),
-                log: "Command executed successfully. I will present the output to the user.".to_string(),
-                status: "success".to_string(),
-            }
-        }).await;
+        let _ = tx
+            .send(SseEvent::Step {
+                step: AgentStep {
+                    title: "Thinking Process".to_string(),
+                    log: "Command executed successfully. I will present the output to the user."
+                        .to_string(),
+                    status: "success".to_string(),
+                },
+            })
+            .await;
 
         response = format!(
             "Perintah `{} {}` berhasil dijalankan (Mode Demo):\n\n\
@@ -1745,21 +1937,48 @@ async fn run_demo_mode_streaming(
             ```\n\n\
             **Perintah yang diizinkan**: `{}`\n\n\
             *Catatan: Tool ini memiliki whitelist keamanan dan timeout 30 detik.*",
-            command, args.join(" "), cmd_res, COMMAND_WHITELIST.join("`, `")
+            command,
+            args.join(" "),
+            cmd_res,
+            COMMAND_WHITELIST.join("`, `")
         );
-    } else if last_user_msg.contains("cari ") || last_user_msg.contains("search ") || last_user_msg.contains("google ") || last_user_msg.contains("browsing ") {
+    } else if last_user_msg.contains("cari ")
+        || last_user_msg.contains("search ")
+        || last_user_msg.contains("google ")
+        || last_user_msg.contains("browsing ")
+    {
         let query = if let Some(idx) = last_user_msg.find("cari ") {
-            &messages.iter().filter(|m| m.role == "user").last().unwrap().content[idx + 5..]
+            &messages
+                .iter()
+                .filter(|m| m.role == "user")
+                .last()
+                .unwrap()
+                .content[idx + 5..]
         } else if let Some(idx) = last_user_msg.find("search ") {
-            &messages.iter().filter(|m| m.role == "user").last().unwrap().content[idx + 7..]
+            &messages
+                .iter()
+                .filter(|m| m.role == "user")
+                .last()
+                .unwrap()
+                .content[idx + 7..]
         } else if let Some(idx) = last_user_msg.find("google ") {
-            &messages.iter().filter(|m| m.role == "user").last().unwrap().content[idx + 7..]
+            &messages
+                .iter()
+                .filter(|m| m.role == "user")
+                .last()
+                .unwrap()
+                .content[idx + 7..]
         } else if let Some(idx) = last_user_msg.find("browsing ") {
-            &messages.iter().filter(|m| m.role == "user").last().unwrap().content[idx + 9..]
+            &messages
+                .iter()
+                .filter(|m| m.role == "user")
+                .last()
+                .unwrap()
+                .content[idx + 9..]
         } else {
             "Rust Axum framework"
         };
-        
+
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
                 title: "Thinking Process".to_string(),
@@ -1792,11 +2011,17 @@ async fn run_demo_mode_streaming(
             *Catatan: Agen ini menggunakan DuckDuckGo secara otonom untuk pencarian web!*",
             query, search_res
         );
-    } else if last_user_msg.contains("http://") || last_user_msg.contains("https://") || last_user_msg.contains("buka url") || last_user_msg.contains("fetch url") {
+    } else if last_user_msg.contains("http://")
+        || last_user_msg.contains("https://")
+        || last_user_msg.contains("buka url")
+        || last_user_msg.contains("fetch url")
+    {
         let mut url_found = "https://example.com".to_string();
         for word in last_user_msg.split_whitespace() {
             if word.starts_with("http://") || word.starts_with("https://") {
-                url_found = word.trim_matches(|c| c == '`' || c == '\'' || c == '"' || c == '<' || c == '>').to_string();
+                url_found = word
+                    .trim_matches(|c| c == '`' || c == '\'' || c == '"' || c == '<' || c == '>')
+                    .to_string();
                 break;
             }
         }
@@ -1834,7 +2059,11 @@ async fn run_demo_mode_streaming(
             ```",
             url_found, fetch_res
         );
-    } else if last_user_msg.contains("file") || last_user_msg.contains("direktori") || last_user_msg.contains("ls") || last_user_msg.contains("list") {
+    } else if last_user_msg.contains("file")
+        || last_user_msg.contains("direktori")
+        || last_user_msg.contains("ls")
+        || last_user_msg.contains("list")
+    {
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
                 title: "Thinking Process".to_string(),
@@ -1844,13 +2073,15 @@ async fn run_demo_mode_streaming(
         }).await;
 
         let dir_res = run_list_directory(None);
-        let _ = tx.send(SseEvent::Step {
-            step: AgentStep {
-                title: "Executing Tool: list_directory".to_string(),
-                log: format!("Arguments: {{}}\n\nResult:\n{}", dir_res),
-                status: "success".to_string(),
-            }
-        }).await;
+        let _ = tx
+            .send(SseEvent::Step {
+                step: AgentStep {
+                    title: "Executing Tool: list_directory".to_string(),
+                    log: format!("Arguments: {{}}\n\nResult:\n{}", dir_res),
+                    status: "success".to_string(),
+                },
+            })
+            .await;
 
         let _ = tx.send(SseEvent::Step {
             step: AgentStep {
@@ -1868,9 +2099,18 @@ async fn run_demo_mode_streaming(
             *Masukkan Gemini API Key untuk menguji agen otonom sesungguhnya yang dapat menelusuri file dan memecahkan kode Anda secara dinamis!*",
             dir_res
         );
-    } else if last_user_msg.contains("threads") || last_user_msg.contains("posting") || last_user_msg.contains("post ") {
+    } else if last_user_msg.contains("threads")
+        || last_user_msg.contains("posting")
+        || last_user_msg.contains("post ")
+    {
         let post_text = if last_user_msg.contains("posting ") {
-            let user_content = messages.iter().filter(|m| m.role == "user").last().unwrap().content.clone();
+            let user_content = messages
+                .iter()
+                .filter(|m| m.role == "user")
+                .last()
+                .unwrap()
+                .content
+                .clone();
             let idx = user_content.to_lowercase().find("posting ").unwrap();
             user_content[idx + 8..].trim().to_string()
         } else {
@@ -1910,7 +2150,10 @@ async fn run_demo_mode_streaming(
         tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(6)).await;
             let _ = tokio::process::Command::new("powershell")
-                .args(&["-Command", "(New-Object -ComObject Wscript.Shell).SendKeys('^{ENTER}')"])
+                .args(&[
+                    "-Command",
+                    "(New-Object -ComObject Wscript.Shell).SendKeys('^{ENTER}')",
+                ])
                 .output()
                 .await;
         });
@@ -1926,7 +2169,8 @@ async fn run_demo_mode_streaming(
             2. **Call to Action (CTA)**: Pertanyaan di akhir mendorong interaksi (kolom balasan).\n\
             3. **Panjang Karakter**: {} karakter (sangat di bawah limit 500).\n\n\
             *Tab baru Threads web composer seharusnya terbuka otomatis secara lokal dan diposting otomatis dalam waktu 6 detik!*",
-            post_text, post_text.chars().count()
+            post_text,
+            post_text.chars().count()
         );
     } else {
         let _ = tx.send(SseEvent::Step {
